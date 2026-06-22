@@ -62,7 +62,8 @@ type ChatSettingsState = {
 
 function defaultChatSettings(): ChatSettings {
   return {
-    showToolMessages: false,
+    // Owen prefers the per-tool-call view on by default (matches the pre-fork build).
+    showToolMessages: true,
     showReasoningBlocks: false,
     theme: 'light',
     loaderStyle: 'dots',
