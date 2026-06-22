@@ -135,9 +135,49 @@ export function ensureSwarmProfileConfig(profilePath: string): ProfileBootstrapR
     if (!existsSync(configPath)) {
       return { ...result, ok: false, error: `config.yaml missing at ${configPath}` }
     }
+
+    // Point swarm workers at a reachable brain. The operator's config.yaml uses
+    // the gateway-facing model id (e.g. provider: ollama / model: hermes-agent),
+    // which a standalone `hermes chat` worker cannot resolve — it dies at first-run
+    // setup ("no providers found"). When HERMES_SWARM_MODEL_BASE_URL + _DEFAULT are
+    // set, force a working OpenAI-compatible `model` block into the worker profile.
+    // Isolated to the profile config; the operator's own config.yaml is untouched.
+    applySwarmModelOverride(configPath)
+
     return result
   } catch (err) {
     return { ...result, ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * Force a reachable `model` block into a worker profile's config.yaml from env.
+ * Best-effort: leaves the file untouched if env is unset or on any error.
+ *   HERMES_SWARM_MODEL_PROVIDER (default "custom")
+ *   HERMES_SWARM_MODEL_BASE_URL (required to activate)
+ *   HERMES_SWARM_MODEL_DEFAULT  (required to activate)
+ */
+function applySwarmModelOverride(configPath: string): void {
+  const baseUrl = process.env.HERMES_SWARM_MODEL_BASE_URL
+  const def = process.env.HERMES_SWARM_MODEL_DEFAULT
+  const provider = process.env.HERMES_SWARM_MODEL_PROVIDER || 'custom'
+  if (!baseUrl || !def) return
+  try {
+    const parsed = (yaml.parse(readFileSync(configPath, 'utf8')) ?? {}) as Record<string, unknown>
+    const model =
+      parsed.model && typeof parsed.model === 'object' && !Array.isArray(parsed.model)
+        ? (parsed.model as Record<string, unknown>)
+        : {}
+    if (model.provider === provider && model.base_url === baseUrl && model.default === def) return
+    model.provider = provider
+    model.base_url = baseUrl
+    model.default = def
+    parsed.model = model
+    const tmp = `${configPath}.tmp-${process.pid}-${Date.now()}`
+    writeFileSync(tmp, yaml.stringify(parsed, { lineWidth: 0 }), 'utf8')
+    renameSync(tmp, configPath)
+  } catch {
+    // best-effort — never wedge a worker because we couldn't rewrite the model block
   }
 }
 
