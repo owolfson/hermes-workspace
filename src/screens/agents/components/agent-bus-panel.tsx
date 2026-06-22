@@ -54,11 +54,11 @@ type ActionState =
 
 const initialActionState: ActionState = {
   status: 'idle',
-  message: 'Safe actions are logged in the Agent Bus.',
+  message: 'Safe actions are logged to the Agent Bus.',
 }
 
 function formatDate(value?: string): string {
-  if (!value) return 'no readings'
+  if (!value) return 'no reading'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return new Intl.DateTimeFormat('en-US', {
@@ -70,7 +70,7 @@ function formatDate(value?: string): string {
 }
 
 function firstLine(value?: string): string {
-  return String(value || '').split('\\n').find(Boolean) || 'no details'
+  return String(value || '').split('\n').find(Boolean) || 'no detail'
 }
 
 function missionTitle(mission: AgentBusMission): string {
@@ -144,7 +144,7 @@ export function AgentBusPanel() {
   const visibleIssues = useMemo(() => issues.slice(0, 5), [issues])
 
   async function runAction(body: Record<string, unknown>, successMessage: string) {
-    setAction({ status: 'running', message: 'Executing safe action...' })
+    setAction({ status: 'running', message: 'Running safe action...' })
     try {
       const response = await fetch('/api/agent-bus', {
         method: 'POST',
@@ -173,14 +173,14 @@ export function AgentBusPanel() {
             Agent Bus
           </p>
           <h2 className="mt-1 text-lg font-semibold text-[var(--theme-text)]">
-            Troop Status
+            Fleet Status
           </h2>
           <p className="mt-1 text-sm text-[var(--theme-muted-2)]">
-            Scumbag telemetry, missions, and pending operational tasks of Hermes.
+            Live read of agent status, missions, and operational issues across Hermes.
           </p>
         </div>
         <div className="rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 py-3 text-sm text-[var(--theme-muted)]">
-          Last check: {formatDate(data?.status?.checked_at)}
+          Last read: {formatDate(data?.status?.checked_at)}
         </div>
       </div>
 
@@ -199,14 +199,14 @@ export function AgentBusPanel() {
             <StatTile label="online" value={summary.up ?? 0} tone="good" />
             <StatTile label="down" value={summary.down ?? 0} tone={(summary.down ?? 0) > 0 ? 'bad' : 'good'} />
             <StatTile label="no endpoint" value={summary.no_endpoint ?? 0} tone={(summary.no_endpoint ?? 0) > 0 ? 'warn' : 'good'} />
-            <StatTile label="non op." value={summary.non_operational ?? 0} tone={(summary.non_operational ?? 0) > 0 ? 'warn' : 'good'} />
+            <StatTile label="non-op" value={summary.non_operational ?? 0} tone={(summary.non_operational ?? 0) > 0 ? 'warn' : 'good'} />
             <StatTile label="events" value={events.length || summary.events || 0} tone={events.length > 0 ? 'bad' : 'good'} />
           </div>
 
           <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-[1.1fr_0.9fr]">
             <div className="rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg)] p-4">
               <div className="flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold text-[var(--theme-text)]">Active Issues</h3>
+                <h3 className="text-sm font-semibold text-[var(--theme-text)]">Live issues</h3>
                 <span className="text-xs text-[var(--theme-muted)]">{issues.length} items</span>
               </div>
               <div className="mt-3 space-y-2">
@@ -231,7 +231,7 @@ export function AgentBusPanel() {
                   ))
                 ) : (
                   <div className="rounded-xl border border-dashed border-[var(--theme-border)] bg-[var(--theme-card)] px-3 py-5 text-sm text-[var(--theme-muted)]">
-                    No operational agents are down right now.
+                    No operational agents down right now.
                   </div>
                 )}
               </div>
@@ -239,8 +239,8 @@ export function AgentBusPanel() {
 
             <div className="rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg)] p-4">
               <div className="flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold text-[var(--theme-text)]">Recent Missions</h3>
-                <span className="text-xs text-[var(--theme-muted)]">{missions.length} logs</span>
+                <h3 className="text-sm font-semibold text-[var(--theme-text)]">Recent missions</h3>
+                <span className="text-xs text-[var(--theme-muted)]">{missions.length} records</span>
               </div>
               <div className="mt-3 space-y-2">
                 {missions.slice(0, 5).map((mission, index) => (
@@ -257,13 +257,13 @@ export function AgentBusPanel() {
                       </span>
                     </div>
                     <p className="mt-1 line-clamp-2 text-xs text-[var(--theme-muted)]">
-                      {mission.brief || mission.reason || 'mission registered'}
+                      {mission.brief || mission.reason || 'mission recorded'}
                     </p>
                   </div>
                 ))}
                 {!missions.length ? (
                   <div className="rounded-xl border border-dashed border-[var(--theme-border)] bg-[var(--theme-card)] px-3 py-5 text-sm text-[var(--theme-muted)]">
-                    No missions registered yet.
+                    No missions recorded yet.
                   </div>
                 ) : null}
               </div>
@@ -273,9 +273,9 @@ export function AgentBusPanel() {
           <div className="mt-5 rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg)] p-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <h3 className="text-sm font-semibold text-[var(--theme-text)]">Safe Actions</h3>
+                <h3 className="text-sm font-semibold text-[var(--theme-text)]">Safe actions</h3>
                 <p className="mt-1 text-xs text-[var(--theme-muted)]">
-                  No restart, no WhatsApp, and no automated token consumption.
+                  No restarts, no WhatsApp, no automatic paid spend.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -285,30 +285,6 @@ export function AgentBusPanel() {
                   className="rounded-xl border border-[var(--theme-border)] bg-[var(--theme-card)] px-3 py-2 text-sm font-medium text-[var(--theme-text)] transition-colors hover:bg-[var(--theme-card2)]"
                 >
                   Sync Roadmap
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    runAction(
-                      { action: 'thumbnail-mission', target: 'vini' },
-                      'Vini thumbnail mission registered.',
-                    )
-                  }
-                  className="rounded-xl border border-[var(--theme-border)] bg-[var(--theme-card)] px-3 py-2 text-sm font-medium text-[var(--theme-text)] transition-colors hover:bg-[var(--theme-card2)]"
-                >
-                  Vini Thumbnail Mission
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    runAction(
-                      { action: 'handoff-mission', source: 'dona-helena', target: 'larissinha' },
-                      'Dona Helena -> Larissinha handoff registered.',
-                    )
-                  }
-                  className="rounded-xl border border-[var(--theme-border)] bg-[var(--theme-card)] px-3 py-2 text-sm font-medium text-[var(--theme-text)] transition-colors hover:bg-[var(--theme-card2)]"
-                >
-                  Handoff Helena to Larissinha
                 </button>
               </div>
             </div>
