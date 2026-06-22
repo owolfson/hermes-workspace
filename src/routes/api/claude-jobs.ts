@@ -62,7 +62,39 @@ export const Route = createFileRoute('/api/claude-jobs')({
         const url = new URL(request.url)
         const aggregateProfiles = url.searchParams.get('profiles') !== 'active'
         if (aggregateProfiles) {
-          return new Response(JSON.stringify({ jobs: listProfileCronJobs() }), {
+          const localJobs = listProfileCronJobs()
+          // The operator's real Hermes cron lives in the AGENT (/opt/data/cron),
+          // surfaced via the dashboard's /api/cron/jobs — NOT in the workspace's
+          // local profile dirs. In a split-container deploy listProfileCronJobs()
+          // is therefore empty, so merge in the gateway/dashboard cron jobs too.
+          let gatewayJobs: Array<Record<string, unknown>> = []
+          try {
+            const caps = await ensureGatewayProbed()
+            if (caps.jobs && caps.dashboard.available) {
+              const res = await dashboardFetch('/api/cron/jobs')
+              if (res.ok) {
+                const data = (await res.json()) as unknown
+                const arr = Array.isArray(data)
+                  ? data
+                  : ((data as { jobs?: unknown })?.jobs ?? [])
+                if (Array.isArray(arr)) {
+                  gatewayJobs = arr as Array<Record<string, unknown>>
+                }
+              }
+            }
+          } catch {
+            // best-effort — fall back to local-only on any gateway error
+          }
+          const keyOf = (j: Record<string, unknown>): string =>
+            String((j.id as string) ?? (j.name as string) ?? '')
+          const seen = new Set(gatewayJobs.map(keyOf))
+          const merged = [
+            ...gatewayJobs,
+            ...localJobs.filter(
+              (j) => !seen.has(keyOf(j as unknown as Record<string, unknown>)),
+            ),
+          ]
+          return new Response(JSON.stringify({ jobs: merged }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
