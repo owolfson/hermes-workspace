@@ -517,6 +517,13 @@ async function probeMcp(): Promise<boolean> {
  * silently enable on a remote deployment.
  */
 export function isLocalhostDeployment(): boolean {
+  // Trusted single-box override. This workspace reaches the agent/dashboard over
+  // the Docker network (non-loopback hostnames like `hermes-agent`) but runs on the
+  // SAME trusted host, behind the workspace login. The strict loopback check below
+  // then disables MCP config-fallback CRUD. When the operator explicitly opts in
+  // (HERMES_TRUST_LOCAL_MCP=1), treat it as a local/trusted deployment so MCP works.
+  const trust = (process.env.HERMES_TRUST_LOCAL_MCP || '').trim().toLowerCase()
+  if (trust === '1' || trust === 'true' || trust === 'yes') return true
   const isLoopbackHost = (host: string): boolean => {
     const h = host.trim().toLowerCase()
     if (!h) return false
