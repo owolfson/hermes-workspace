@@ -26,6 +26,7 @@ import type {LocaleId} from '@/lib/i18n';
 import { GROQ_STT_MODELS, STT_PROVIDER_OPTIONS } from '@/lib/stt-config'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
+import { notifyTtsSettingsChanged } from '@/hooks/use-tts-playback'
 import { applyTheme, useSettings } from '@/hooks/use-settings'
 import {
   THEMES,
@@ -2180,6 +2181,7 @@ function VoiceContent() {
   const [tts, setTts] = useState<Record<string, unknown>>({})
   const [stt, setStt] = useState<Record<string, unknown>>({})
   const [msg, setMsg] = useState<string | null>(null)
+  const [voices, setVoices] = useState<Array<{ id: string; name: string }>>([])
 
   useEffect(() => {
     fetch('/api/hermes-config')
@@ -2200,6 +2202,7 @@ function VoiceContent() {
         body: JSON.stringify({ config: { tts: { [key]: value } } }),
       })
       setTts((prev) => ({ ...prev, [key]: value }))
+      notifyTtsSettingsChanged()
       setMsg('Saved')
       setTimeout(() => setMsg(null), 2000)
     } catch {
@@ -2223,10 +2226,32 @@ function VoiceContent() {
     }
   }
 
-  const ttsProvider = String(tts.provider || 'edge')
+  const ttsProvider = String(tts.provider || 'local')
   const sttProvider = String(stt.provider || 'local')
   const sttGroq =
     (stt.groq as Record<string, unknown> | undefined) || {}
+
+  // Auto-populate the voice list from the active backend (speaches exposes
+  // /v1/audio/voices). Re-fetch whenever the provider changes.
+  useEffect(() => {
+    if (ttsProvider !== 'local' && ttsProvider !== 'speaches') {
+      setVoices([])
+      return
+    }
+    let active = true
+    fetch('/api/tts-voices')
+      .then((r) => r.json())
+      .then((d: any) => {
+        if (active && d?.ok && Array.isArray(d.voices)) setVoices(d.voices)
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [ttsProvider])
+
+  const localVoice = String(tts.voice || 'anushri')
+  const autoSpeak = tts.autoSpeak === true
 
   return (
     <div className="space-y-4">
@@ -2256,12 +2281,40 @@ function VoiceContent() {
             onChange={(e) => saveTts('provider', e.target.value)}
             className="h-8 rounded-lg border border-primary-200 bg-primary-50 px-2 text-sm text-primary-900 outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
           >
+            <option value="local">Local (Chatterbox)</option>
             <option value="edge">Edge TTS</option>
             <option value="elevenlabs">ElevenLabs</option>
             <option value="openai">OpenAI TTS</option>
             <option value="neutts">NeuTTS</option>
           </select>
         </Row>
+        <Row
+          label="Auto-speak replies"
+          description="Read each assistant reply aloud automatically."
+        >
+          <Switch
+            checked={autoSpeak}
+            onCheckedChange={(c) => saveTts('autoSpeak', c)}
+          />
+        </Row>
+        {(ttsProvider === 'local' || ttsProvider === 'speaches') && (
+          <Row label="Voice">
+            <select
+              value={localVoice}
+              onChange={(e) => saveTts('voice', e.target.value)}
+              className="h-8 max-w-[12rem] rounded-lg border border-primary-200 bg-primary-50 px-2 text-sm text-primary-900 outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+            >
+              {(voices.length
+                ? voices
+                : [{ id: localVoice, name: localVoice }]
+              ).map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}
+                </option>
+              ))}
+            </select>
+          </Row>
+        )}
         {ttsProvider === 'openai' && (
           <Row label="Voice">
             <select

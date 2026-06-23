@@ -36,6 +36,10 @@ import {
   useChatSettingsStore,
 } from '@/hooks/use-chat-settings'
 import { cn } from '@/lib/utils'
+import {
+  speakText,
+  useTtsSettings,
+} from '@/hooks/use-tts-playback'
 import { CHAT_SUBMIT_SELECTION_EVENT } from '@/screens/chat/chat-events'
 
 const WORDS_PER_TICK = 4
@@ -2316,6 +2320,35 @@ function MessageItemComponent({
   const canRetryMessage =
     isUser && (hasText || hasAttachments || hasInlineImages)
 
+  // Auto-speak: when enabled, read an assistant reply aloud once it finishes
+  // streaming. Tracking the streaming→done transition (rather than mount state)
+  // means historical messages loaded on refresh are never spoken.
+  const ttsSettings = useTtsSettings()
+  const messageSpeakKey = (message as { id?: string }).id || String(timestamp)
+  const wasStreamingRef = useRef(effectiveIsStreaming)
+  const autoSpokenRef = useRef(false)
+  useEffect(() => {
+    const justFinished = wasStreamingRef.current && !effectiveIsStreaming
+    wasStreamingRef.current = effectiveIsStreaming
+    if (
+      justFinished &&
+      !isUser &&
+      hasText &&
+      ttsSettings.autoSpeak &&
+      !autoSpokenRef.current
+    ) {
+      autoSpokenRef.current = true
+      speakText(fullText, { key: messageSpeakKey }).catch(() => {})
+    }
+  }, [
+    effectiveIsStreaming,
+    isUser,
+    hasText,
+    ttsSettings.autoSpeak,
+    fullText,
+    messageSpeakKey,
+  ])
+
   // Get tool calls from this message (for assistant messages)
   const toolCalls = role === 'assistant' ? getToolCallsFromMessage(message) : []
   const embeddedStreamToolCalls = useMemo(() => {
@@ -2894,6 +2927,8 @@ function MessageItemComponent({
           text={fullText}
           timestamp={timestamp}
           align={isUser ? 'end' : 'start'}
+          canSpeak={!isUser && hasText && !effectiveIsStreaming}
+          speakKey={messageSpeakKey}
           forceVisible={forceActionsVisible}
           isQueued={isUser && isQueued && !isFailed}
           isFailed={isUser && (isFailed || isStuckSending)}
