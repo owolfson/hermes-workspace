@@ -1,7 +1,15 @@
 import { useState } from 'react'
 import { HugeiconsIcon } from '@hugeicons/react'
-import { Copy01Icon, RefreshIcon, Tick02Icon } from '@hugeicons/core-free-icons'
+import {
+  Copy01Icon,
+  Loading03Icon,
+  RefreshIcon,
+  Tick02Icon,
+  VolumeHighIcon,
+  VolumeMute02Icon,
+} from '@hugeicons/core-free-icons'
 import { MessageTimestamp } from './message-timestamp'
+import { useTtsPlayback } from '@/hooks/use-tts-playback'
 import {
   TooltipContent,
   TooltipProvider,
@@ -19,6 +27,10 @@ type MessageActionsBarProps = {
   isQueued?: boolean
   isFailed?: boolean
   onRetry?: () => void
+  /** Show the read-aloud (TTS) button — assistant messages with text. */
+  canSpeak?: boolean
+  /** Stable key so playback state survives streaming re-renders. */
+  speakKey?: string
 }
 
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -54,8 +66,14 @@ export function MessageActionsBar({
   isQueued = false,
   isFailed = false,
   onRetry,
+  canSpeak = false,
+  speakKey,
 }: MessageActionsBarProps) {
   const [copied, setCopied] = useState(false)
+  const tts = useTtsPlayback()
+  const thisKey = speakKey ?? text.slice(0, 48)
+  const isThisLoading = tts.key === thisKey && tts.state === 'loading'
+  const isThisPlaying = tts.key === thisKey && tts.state === 'playing'
 
   const handleCopy = async () => {
     try {
@@ -89,6 +107,35 @@ export function MessageActionsBar({
               <span className="text-[11px] font-medium">Retry</span>
             </TooltipTrigger>
             <TooltipContent side="top">Resend failed message</TooltipContent>
+          </TooltipRoot>
+        </TooltipProvider>
+      )}
+      {canSpeak && text.trim().length > 0 && (
+        <TooltipProvider>
+          <TooltipRoot>
+            <TooltipTrigger
+              type="button"
+              onClick={() => {
+                tts.speak(text, { key: thisKey }).catch(() => {})
+              }}
+              className="inline-flex items-center justify-center rounded border border-transparent bg-transparent p-1 text-primary-700 hover:text-primary-900 hover:bg-primary-100 dark:hover:bg-primary-800"
+            >
+              <HugeiconsIcon
+                icon={
+                  isThisPlaying
+                    ? VolumeMute02Icon
+                    : isThisLoading
+                      ? Loading03Icon
+                      : VolumeHighIcon
+                }
+                size={16}
+                strokeWidth={1.6}
+                className={isThisLoading ? 'animate-spin' : undefined}
+              />
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              {isThisPlaying ? 'Stop' : 'Read aloud'}
+            </TooltipContent>
           </TooltipRoot>
         </TooltipProvider>
       )}
