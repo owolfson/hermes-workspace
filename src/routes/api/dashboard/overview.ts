@@ -24,6 +24,7 @@ import {
 import {
   buildDashboardOverview,
   type DashboardFetcher,
+  type DashboardOverview,
 } from '../../../server/dashboard-aggregator'
 
 const overviewFetcher: DashboardFetcher = (path) => dashboardFetch(path)
@@ -31,6 +32,17 @@ const overviewFetcher: DashboardFetcher = (path) => dashboardFetch(path)
 // `/health/detailed` lives. The Hermes Agent confirmed `active_agents`
 // from this endpoint is the canonical “currently running” count.
 const overviewGatewayFetcher: DashboardFetcher = (path) => gatewayFetch(path)
+
+// Server-side memo with in-flight coalescing. The analytics section of the
+// aggregate can take ~40s on the hermes-dashboard side (SessionDB rollup over
+// thousands of sessions), and every open tab refetches every 30s — without
+// this, concurrent requests stack 40s aggregations, the dashboard container
+// saturates, and the capability probe starts timing out (the UI then degrades
+// to "backend does not support the sessions API"). One upstream aggregation
+// per key per TTL; concurrent callers share the same promise.
+type OverviewCacheEntry = { at: number; promise: Promise<DashboardOverview> }
+const overviewCache = new Map<string, OverviewCacheEntry>()
+const OVERVIEW_TTL_MS = 30_000
 
 export const Route = createFileRoute('/api/dashboard/overview')({
   server: {
@@ -44,17 +56,37 @@ export const Route = createFileRoute('/api/dashboard/overview')({
           const days = Number(url.searchParams.get('days') ?? '30')
           const limit = Number(url.searchParams.get('achievements') ?? '3')
           const logsLimit = Number(url.searchParams.get('logs') ?? '24')
-          const overview = await buildDashboardOverview({
-            fetcher: overviewFetcher,
-            gatewayFetcher: overviewGatewayFetcher,
-            analyticsWindowDays: Number.isFinite(days) && days > 0 ? days : 30,
-            achievementsLimit:
-              Number.isFinite(limit) && limit > 0 ? Math.min(limit, 12) : 3,
-            logsLimit:
-              Number.isFinite(logsLimit) && logsLimit > 0
-                ? Math.min(logsLimit, 100)
-                : 24,
-          })
+          const analyticsWindowDays =
+            Number.isFinite(days) && days > 0 ? days : 30
+          const achievementsLimit =
+            Number.isFinite(limit) && limit > 0 ? Math.min(limit, 12) : 3
+          const logsLimitNorm =
+            Number.isFinite(logsLimit) && logsLimit > 0
+              ? Math.min(logsLimit, 100)
+              : 24
+
+          const cacheKey = `${analyticsWindowDays}:${achievementsLimit}:${logsLimitNorm}`
+          const now = Date.now()
+          let entry = overviewCache.get(cacheKey)
+          if (!entry || now - entry.at >= OVERVIEW_TTL_MS) {
+            const promise = buildDashboardOverview({
+              fetcher: overviewFetcher,
+              gatewayFetcher: overviewGatewayFetcher,
+              analyticsWindowDays,
+              achievementsLimit,
+              logsLimit: logsLimitNorm,
+            })
+            entry = { at: now, promise }
+            overviewCache.set(cacheKey, entry)
+            // Never serve a failed build from cache — drop it so the next
+            // request retries.
+            promise.catch(() => {
+              if (overviewCache.get(cacheKey) === entry) {
+                overviewCache.delete(cacheKey)
+              }
+            })
+          }
+          const overview = await entry.promise
           return json(overview, {
             headers: {
               // The aggregate is cheap to recompute (parallel fans-out
