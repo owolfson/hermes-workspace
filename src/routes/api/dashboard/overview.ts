@@ -40,7 +40,13 @@ const overviewGatewayFetcher: DashboardFetcher = (path) => gatewayFetch(path)
 // saturates, and the capability probe starts timing out (the UI then degrades
 // to "backend does not support the sessions API"). One upstream aggregation
 // per key per TTL; concurrent callers share the same promise.
-type OverviewCacheEntry = { at: number; promise: Promise<DashboardOverview> }
+// TTL counts from RESOLUTION, not build start — the build itself can exceed
+// the TTL, and counting from start would expire every entry before it ever
+// served a hit. An in-flight build is always shared regardless of age.
+type OverviewCacheEntry = {
+  resolvedAt: number | null
+  promise: Promise<DashboardOverview>
+}
 const overviewCache = new Map<string, OverviewCacheEntry>()
 const OVERVIEW_TTL_MS = 30_000
 
@@ -68,7 +74,11 @@ export const Route = createFileRoute('/api/dashboard/overview')({
           const cacheKey = `${analyticsWindowDays}:${achievementsLimit}:${logsLimitNorm}`
           const now = Date.now()
           let entry = overviewCache.get(cacheKey)
-          if (!entry || now - entry.at >= OVERVIEW_TTL_MS) {
+          const fresh =
+            entry &&
+            (entry.resolvedAt === null || // in-flight — share it
+              now - entry.resolvedAt < OVERVIEW_TTL_MS)
+          if (!entry || !fresh) {
             const promise = buildDashboardOverview({
               fetcher: overviewFetcher,
               gatewayFetcher: overviewGatewayFetcher,
@@ -76,15 +86,21 @@ export const Route = createFileRoute('/api/dashboard/overview')({
               achievementsLimit,
               logsLimit: logsLimitNorm,
             })
-            entry = { at: now, promise }
-            overviewCache.set(cacheKey, entry)
-            // Never serve a failed build from cache — drop it so the next
-            // request retries.
-            promise.catch(() => {
-              if (overviewCache.get(cacheKey) === entry) {
-                overviewCache.delete(cacheKey)
-              }
-            })
+            const next: OverviewCacheEntry = { resolvedAt: null, promise }
+            overviewCache.set(cacheKey, next)
+            promise.then(
+              () => {
+                next.resolvedAt = Date.now()
+              },
+              () => {
+                // Never serve a failed build from cache — drop it so the
+                // next request retries.
+                if (overviewCache.get(cacheKey) === next) {
+                  overviewCache.delete(cacheKey)
+                }
+              },
+            )
+            entry = next
           }
           const overview = await entry.promise
           return json(overview, {
