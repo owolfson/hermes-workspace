@@ -380,6 +380,10 @@ function normalizeCron(raw: unknown): DashboardCronSection | null {
         typeof j.last_run_at === 'string' ? j.last_run_at : null
       recentFailures.push({ id, name, lastError, lastRunAt })
     }
+    // Paused/disabled jobs keep their pre-pause next_run_at forever, which
+    // otherwise drives the aggregate nextRunAt into the past and flags the
+    // whole scheduler OVERDUE/stale while active jobs are running fine.
+    if (state === 'paused' || j.enabled === false) continue
     const candidates = [
       typeof j.next_run_at === 'string' ? Date.parse(j.next_run_at) : NaN,
       typeof j.next_run === 'string' ? Date.parse(j.next_run) : NaN,

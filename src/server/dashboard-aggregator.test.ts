@@ -105,6 +105,24 @@ describe('buildDashboardOverview', () => {
     })
   })
 
+  it('ignores paused/disabled jobs when finding the earliest next-run', async () => {
+    const fetcher = makeFetcher({
+      '/api/cron/jobs': {
+        jobs: [
+          // Paused job keeps its stale pre-pause next_run_at — must not
+          // drag the aggregate nextRunAt into the past (false OVERDUE).
+          { id: 'a', state: 'paused', next_run_at: '2020-01-01T00:00:00Z' },
+          { id: 'b', state: 'scheduled', enabled: false, next_run_at: '2020-06-01T00:00:00Z' },
+          { id: 'c', state: 'scheduled', next_run_at: '2099-05-03T01:00:00Z' },
+        ],
+      },
+    })
+    const overview = await buildDashboardOverview({ fetcher })
+    expect(overview.cron?.paused).toBe(1)
+    expect(overview.cron?.nextRunAt).toBe('2099-05-03T01:00:00.000Z')
+    expect(overview.incidents.find((i) => i.id === 'cron-stale')).toBeUndefined()
+  })
+
   it('detects failed cron jobs and surfaces them in incidents', async () => {
     const fetcher = makeFetcher({
       '/api/cron/jobs': {
