@@ -141,7 +141,11 @@ export const DASHBOARD_REQUIRED_INSTRUCTIONS =
 
 export const SESSIONS_API_UNAVAILABLE_MESSAGE = `Your Hermes backend does not support the sessions API. ${CLAUDE_UPGRADE_INSTRUCTIONS}`
 
-const PROBE_TIMEOUT_MS = 3_000
+// 10s (was 3s): the dashboard/agent can be legitimately slow for a few
+// seconds under load (V100 saturation, SessionDB rollups). A tripped probe
+// downgrades the whole UI ("backend does not support the sessions API"),
+// which is far worse than a slow probe — the probe runs off the hot path.
+const PROBE_TIMEOUT_MS = 10_000
 // Probe TTL: 120s when the gateway is healthy, 15s when it isn't. The
 // shorter window during 'disconnected' state means a Docker stack where
 // the workspace boots before the agent recovers within ~15s of the agent
@@ -599,18 +603,26 @@ async function probeMcpConfigKey(): Promise<boolean> {
 }
 
 async function probeDashboard(): Promise<{ available: boolean; url: string }> {
-  try {
-    const res = await fetch(`${CLAUDE_DASHBOARD_URL}/api/status`, {
-      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-    })
-    if (!res.ok) return { available: false, url: CLAUDE_DASHBOARD_URL }
-    const body = (await res.json()) as { version?: string }
-    if (!body.version) return { available: false, url: CLAUDE_DASHBOARD_URL }
-    await fetchDashboardToken().catch(() => '')
-    return { available: true, url: CLAUDE_DASHBOARD_URL }
-  } catch {
-    return { available: false, url: CLAUDE_DASHBOARD_URL }
+  // Nearly every enhanced capability (skills/config/jobs/kanban/conductor)
+  // derives from dashboard.available, so a single transient blip here
+  // degrades the whole UI for a full probe-TTL. Give it a second chance
+  // before accepting a downgrade.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 2_000))
+    try {
+      const res = await fetch(`${CLAUDE_DASHBOARD_URL}/api/status`, {
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      })
+      if (!res.ok) continue
+      const body = (await res.json()) as { version?: string }
+      if (!body.version) continue
+      await fetchDashboardToken().catch(() => '')
+      return { available: true, url: CLAUDE_DASHBOARD_URL }
+    } catch {
+      // fall through to retry
+    }
   }
+  return { available: false, url: CLAUDE_DASHBOARD_URL }
 }
 
 /**
