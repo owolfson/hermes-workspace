@@ -42,6 +42,12 @@ import {
 } from '@/hooks/use-tts-playback'
 import { CHAT_SUBMIT_SELECTION_EVENT } from '@/screens/chat/chat-events'
 
+// Auto-speak bookkeeping (module-level so it survives message remounts).
+// Only messages newer than when the app loaded are eligible — this keeps the
+// feature from reading the whole history aloud on a page refresh.
+const AUTO_SPEAK_SESSION_START = Date.now()
+const autoSpokenKeys = new Set<string>()
+
 const WORDS_PER_TICK = 4
 const TICK_INTERVAL_MS = 50
 const STUCK_SENDING_THRESHOLD_MS = 120_000
@@ -2320,26 +2326,28 @@ function MessageItemComponent({
   const canRetryMessage =
     isUser && (hasText || hasAttachments || hasInlineImages)
 
-  // Auto-speak: when enabled, read an assistant reply aloud once it finishes
-  // streaming. Tracking the streaming→done transition (rather than mount state)
-  // means historical messages loaded on refresh are never spoken.
+  // Auto-speak: when enabled, read an assistant reply aloud once it's complete.
+  // We can't rely on a streaming→done transition on a single component — the
+  // live streaming message and the final message can be different React
+  // instances (different stableId → remount). Instead: speak any complete
+  // assistant message that (a) arrived this session (timestamp gate, so history
+  // loaded on refresh is never spoken) and (b) hasn't been spoken yet
+  // (module-level set, deduped across remounts).
   const ttsSettings = useTtsSettings()
   const messageSpeakKey = (message as { id?: string }).id || String(timestamp)
-  const wasStreamingRef = useRef(effectiveIsStreaming)
-  const autoSpokenRef = useRef(false)
   useEffect(() => {
-    const justFinished = wasStreamingRef.current && !effectiveIsStreaming
-    wasStreamingRef.current = effectiveIsStreaming
     if (
-      justFinished &&
-      !isUser &&
-      hasText &&
-      ttsSettings.autoSpeak &&
-      !autoSpokenRef.current
+      isUser ||
+      !hasText ||
+      effectiveIsStreaming ||
+      !ttsSettings.autoSpeak ||
+      timestamp < AUTO_SPEAK_SESSION_START ||
+      autoSpokenKeys.has(messageSpeakKey)
     ) {
-      autoSpokenRef.current = true
-      speakText(fullText, { key: messageSpeakKey }).catch(() => {})
+      return
     }
+    autoSpokenKeys.add(messageSpeakKey)
+    speakText(fullText, { key: messageSpeakKey }).catch(() => {})
   }, [
     effectiveIsStreaming,
     isUser,
@@ -2347,6 +2355,7 @@ function MessageItemComponent({
     ttsSettings.autoSpeak,
     fullText,
     messageSpeakKey,
+    timestamp,
   ])
 
   // Get tool calls from this message (for assistant messages)

@@ -38,10 +38,12 @@ export const Route = createFileRoute('/api/tts')({
           const body = (await request.json().catch(() => ({}))) as {
             text?: unknown
             voice?: unknown
+            plan?: unknown
           }
           const rawText = typeof body.text === 'string' ? body.text : ''
           const overrideVoice =
             typeof body.voice === 'string' ? body.voice.trim() : ''
+          const planOnly = body.plan === true
 
           const cleaned = cleanSpeechText(rawText).slice(0, MAX_TEXT_CHARS)
           if (!cleaned) {
@@ -59,6 +61,12 @@ export const Route = createFileRoute('/api/tts')({
 
           const voice = overrideVoice || target.voice
           const chunks = chunkSpeechText(cleaned)
+
+          // Plan mode: return the chunk list so the client can synthesise and
+          // play chunk-by-chunk (progressive playback) for fast time-to-first-audio.
+          if (planOnly) {
+            return json({ ok: true, provider: target.provider, voice, chunks })
+          }
           const wavChunks: Buffer[] = []
 
           for (const chunk of chunks) {

@@ -32,7 +32,7 @@ export type TtsParams = {
 
 export type ResolvedTtsTarget = {
   ok: true
-  provider: 'local' | 'openai'
+  provider: 'local' | 'openai' | 'kokoro'
   baseUrl: string
   model: string
   voice: string
@@ -137,6 +137,26 @@ export function resolveTtsTarget(
     }
   }
 
+  if (provider === 'kokoro') {
+    // Kokoro Voice Lab — OpenAI-compatible TTS that can speak named blends
+    // (e.g. "zuri"). No auth, runs on the 1080. Voice defaults to zuri.
+    const kokoro = readRecord(tts.kokoro)
+    return {
+      ok: true,
+      provider: 'kokoro',
+      baseUrl:
+        readString(runtimeEnv.TTS_KOKORO_BASE_URL) ||
+        readString(hermesEnv.TTS_KOKORO_BASE_URL) ||
+        readString(kokoro.baseUrl) ||
+        readString(kokoro.base_url) ||
+        'http://192.168.1.187:8770/v1',
+      model: readString(tts.model) || readString(kokoro.model) || 'kokoro',
+      voice: readString(tts.voice) || readString(kokoro.voice) || 'zuri',
+      apiKey: readString(runtimeEnv.TTS_KOKORO_API_KEY) || 'no-auth',
+      params: { exaggeration: 0.5, cfg_weight: 0.3, temperature: 0.8 },
+    }
+  }
+
   if (provider === 'local' || provider === 'speaches') {
     const local = readRecord(tts.local)
     return {
@@ -149,15 +169,28 @@ export function resolveTtsTarget(
         readString(tts.baseUrl) ||
         DEFAULT_LOCAL_BASE_URL,
       model:
+        readString(tts.model) ||
         readString(local.model) ||
         readString(runtimeEnv.TTS_LOCAL_MODEL) ||
         DEFAULT_LOCAL_MODEL,
       voice: readString(tts.voice) || readString(local.voice) || DEFAULT_LOCAL_VOICE,
       apiKey: readString(runtimeEnv.TTS_LOCAL_API_KEY) || 'no-auth',
+      // Knobs: config (UI sliders) → env → proven defaults. Note chatterbox
+      // *Turbo* ignores exaggeration/cfg_weight (honours temperature); the full
+      // chatterbox model uses all three.
       params: {
-        exaggeration: readNumber(runtimeEnv.TTS_EXAGGERATION, 0.5),
-        cfg_weight: readNumber(runtimeEnv.TTS_CFG_WEIGHT, 0.3),
-        temperature: readNumber(runtimeEnv.TTS_TEMPERATURE, 0.8),
+        exaggeration: readNumber(
+          tts.exaggeration,
+          readNumber(runtimeEnv.TTS_EXAGGERATION, 0.5),
+        ),
+        cfg_weight: readNumber(
+          tts.cfg_weight,
+          readNumber(runtimeEnv.TTS_CFG_WEIGHT, 0.3),
+        ),
+        temperature: readNumber(
+          tts.temperature,
+          readNumber(runtimeEnv.TTS_TEMPERATURE, 0.8),
+        ),
       },
     }
   }

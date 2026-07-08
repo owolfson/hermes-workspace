@@ -147,6 +147,48 @@ describe('resolveTtsTarget', () => {
     expect(t.ok && t.voice).toBe('claude')
   })
 
+  test('reads chatterbox knobs from config when present', () => {
+    const t = resolveTtsTarget(
+      {
+        tts: {
+          provider: 'local',
+          exaggeration: 0.7,
+          cfg_weight: 0.4,
+          temperature: 1.1,
+        },
+      },
+      {},
+      {},
+    )
+    expect(t.ok && t.params).toEqual({
+      exaggeration: 0.7,
+      cfg_weight: 0.4,
+      temperature: 1.1,
+    })
+  })
+
+  test('config knobs override env, env overrides defaults', () => {
+    const t = resolveTtsTarget(
+      { tts: { provider: 'local', temperature: 0.9 } },
+      { TTS_EXAGGERATION: '0.6' },
+      {},
+    )
+    expect(t.ok && t.params).toEqual({
+      exaggeration: 0.6, // from env
+      cfg_weight: 0.3, // default
+      temperature: 0.9, // from config
+    })
+  })
+
+  test('reads a configured local model override', () => {
+    const t = resolveTtsTarget(
+      { tts: { provider: 'local', model: 'chatterbox' } },
+      {},
+      {},
+    )
+    expect(t.ok && t.model).toBe('chatterbox')
+  })
+
   test('lets env override the local base url', () => {
     const t = resolveTtsTarget(
       { tts: { provider: 'local' } },

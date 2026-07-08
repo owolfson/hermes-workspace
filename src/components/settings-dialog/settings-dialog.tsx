@@ -2177,11 +2177,68 @@ function AgentBehaviorContent() {
 
 // ── Voice (TTS + STT) ──────────────────────────────────────────────────
 
+function KnobRow({
+  label,
+  hint,
+  min,
+  max,
+  step,
+  value,
+  onCommit,
+  disabled = false,
+}: {
+  label: string
+  hint?: string
+  min: number
+  max: number
+  step: number
+  value: number
+  onCommit: (v: number) => void
+  disabled?: boolean
+}) {
+  // Track the value locally during a drag; only persist on release so we don't
+  // fire a config write on every slider tick.
+  const [local, setLocal] = useState(value)
+  useEffect(() => setLocal(value), [value])
+  const commit = () => {
+    const rounded = Number(local.toFixed(2))
+    if (rounded !== value) onCommit(rounded)
+  }
+  return (
+    <div className={cn('flex items-center gap-3', disabled && 'opacity-50')}>
+      <div className="w-28 shrink-0">
+        <div className="text-xs text-primary-800 dark:text-neutral-200">
+          {label}
+        </div>
+        {hint && <div className="text-[10px] text-primary-400">{hint}</div>}
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={local}
+        disabled={disabled}
+        onChange={(e) => setLocal(parseFloat(e.target.value))}
+        onMouseUp={commit}
+        onTouchEnd={commit}
+        onKeyUp={commit}
+        onBlur={commit}
+        className="flex-1 accent-primary-500"
+      />
+      <span className="w-9 shrink-0 text-right text-xs tabular-nums text-primary-600">
+        {local.toFixed(2)}
+      </span>
+    </div>
+  )
+}
+
 function VoiceContent() {
   const [tts, setTts] = useState<Record<string, unknown>>({})
   const [stt, setStt] = useState<Record<string, unknown>>({})
   const [msg, setMsg] = useState<string | null>(null)
   const [voices, setVoices] = useState<Array<{ id: string; name: string }>>([])
+  const [models, setModels] = useState<Array<string>>([])
 
   useEffect(() => {
     fetch('/api/hermes-config')
@@ -2234,15 +2291,22 @@ function VoiceContent() {
   // Auto-populate the voice list from the active backend (speaches exposes
   // /v1/audio/voices). Re-fetch whenever the provider changes.
   useEffect(() => {
-    if (ttsProvider !== 'local' && ttsProvider !== 'speaches') {
+    if (
+      ttsProvider !== 'local' &&
+      ttsProvider !== 'speaches' &&
+      ttsProvider !== 'kokoro'
+    ) {
       setVoices([])
+      setModels([])
       return
     }
     let active = true
     fetch('/api/tts-voices')
       .then((r) => r.json())
       .then((d: any) => {
-        if (active && d?.ok && Array.isArray(d.voices)) setVoices(d.voices)
+        if (!active || !d?.ok) return
+        if (Array.isArray(d.voices)) setVoices(d.voices)
+        if (Array.isArray(d.models)) setModels(d.models)
       })
       .catch(() => {})
     return () => {
@@ -2252,6 +2316,13 @@ function VoiceContent() {
 
   const localVoice = String(tts.voice || 'anushri')
   const autoSpeak = tts.autoSpeak === true
+  const localModel = String(tts.model || models[0] || 'chatterbox-turbo')
+  const isLocal =
+    ttsProvider === 'local' ||
+    ttsProvider === 'speaches' ||
+    ttsProvider === 'kokoro'
+  const knobNum = (key: string, def: number) =>
+    typeof tts[key] === 'number' ? (tts[key] as number) : def
 
   return (
     <div className="space-y-4">
@@ -2282,6 +2353,7 @@ function VoiceContent() {
             className="h-8 rounded-lg border border-primary-200 bg-primary-50 px-2 text-sm text-primary-900 outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
           >
             <option value="local">Local (Chatterbox)</option>
+            <option value="kokoro">Kokoro (voice blend)</option>
             <option value="edge">Edge TTS</option>
             <option value="elevenlabs">ElevenLabs</option>
             <option value="openai">OpenAI TTS</option>
@@ -2297,7 +2369,7 @@ function VoiceContent() {
             onCheckedChange={(c) => saveTts('autoSpeak', c)}
           />
         </Row>
-        {(ttsProvider === 'local' || ttsProvider === 'speaches') && (
+        {isLocal && (
           <Row label="Voice">
             <select
               value={localVoice}
@@ -2314,6 +2386,55 @@ function VoiceContent() {
               ))}
             </select>
           </Row>
+        )}
+        {isLocal && models.length > 0 && (
+          <Row label="Model">
+            <select
+              value={localModel}
+              onChange={(e) => saveTts('model', e.target.value)}
+              className="h-8 max-w-[12rem] rounded-lg border border-primary-200 bg-primary-50 px-2 text-sm text-primary-900 outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+            >
+              {models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </Row>
+        )}
+        {isLocal && (
+          <div className="mt-1 space-y-2 rounded-lg border border-primary-200/60 p-2 dark:border-neutral-700/60">
+            <p className="text-[11px] font-medium uppercase tracking-wider text-primary-400">
+              Chatterbox knobs
+            </p>
+            <KnobRow
+              label="Temperature"
+              hint="Expressiveness / randomness"
+              min={0.1}
+              max={1.5}
+              step={0.05}
+              value={knobNum('temperature', 0.8)}
+              onCommit={(v) => saveTts('temperature', v)}
+            />
+            <KnobRow
+              label="Exaggeration"
+              hint="Emotional intensity"
+              min={0.25}
+              max={1}
+              step={0.05}
+              value={knobNum('exaggeration', 0.5)}
+              onCommit={(v) => saveTts('exaggeration', v)}
+            />
+            <KnobRow
+              label="CFG weight"
+              hint="Pacing / adherence"
+              min={0}
+              max={1}
+              step={0.05}
+              value={knobNum('cfg_weight', 0.3)}
+              onCommit={(v) => saveTts('cfg_weight', v)}
+            />
+          </div>
         )}
         {ttsProvider === 'openai' && (
           <Row label="Voice">

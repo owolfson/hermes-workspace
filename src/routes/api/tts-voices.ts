@@ -69,7 +69,34 @@ export const Route = createFileRoute('/api/tts-voices')({
             )
           }
           const voices = parseVoiceList(await upstream.json().catch(() => ({})))
-          return json({ ok: true, provider: target.provider, voices })
+
+          // Also surface the backend's TTS models (e.g. chatterbox-turbo vs the
+          // full chatterbox) so the UI can offer a model picker.
+          let models: string[] = []
+          try {
+            const modelsRes = await fetch(`${target.baseUrl}/models`, {
+              headers: { Authorization: `Bearer ${target.apiKey}` },
+            })
+            if (modelsRes.ok) {
+              const data = (await modelsRes.json()) as {
+                data?: Array<{ id?: unknown; type?: unknown }>
+              }
+              models = (data.data ?? [])
+                .filter((m) => m && (m.type === 'tts' || m.type === undefined))
+                .map((m) => (typeof m.id === 'string' ? m.id : ''))
+                .filter(Boolean)
+            }
+          } catch {
+            // Non-fatal — model picker just falls back to the configured value.
+          }
+
+          return json({
+            ok: true,
+            provider: target.provider,
+            voices,
+            models,
+            model: target.model,
+          })
         } catch (error) {
           return json({ ok: false, error: safeErrorMessage(error) }, { status: 500 })
         }
