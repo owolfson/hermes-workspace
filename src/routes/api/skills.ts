@@ -14,6 +14,7 @@ import {
 } from '../../server/gateway-capabilities'
 import { requireJsonContentType } from '../../server/rate-limit'
 import { createCapabilityUnavailablePayload } from '@/lib/feature-gates'
+import { swrCached, swrBust } from '../../server/swr-cache'
 
 function getSkillsDir(): string {
   return (
@@ -456,11 +457,20 @@ export const Route = createFileRoute('/api/skills')({
             Math.max(1, Number(url.searchParams.get('limit') || '30')),
           )
 
-          const [sourceItems, localPathMap, bundledManifest] = await Promise.all([
-            fetchClaudeSkills(),
-            buildLocalSkillPathMap(),
-            loadBundledManifest(),
-          ])
+          // The dashboard skills listing + local FS walk take seconds under
+          // load and back both the Skills tab and the chat composer's slash
+          // menu — cache the source fan-out (filters below stay per-request).
+          // Mutations (install/toggle/uninstall) bust this key.
+          const [sourceItems, localPathMap, bundledManifest] = await swrCached(
+            'skills:source',
+            120_000,
+            () =>
+              Promise.all([
+                fetchClaudeSkills(),
+                buildLocalSkillPathMap(),
+                loadBundledManifest(),
+              ]),
+          )
           for (const skill of sourceItems) {
             if (skill.installed) {
               const meta =
@@ -594,6 +604,7 @@ export const Route = createFileRoute('/api/skills')({
             })
 
             const result = await response.json()
+            if (response.ok) swrBust('skills')
             return json(result, { status: response.status })
           }
 
@@ -610,6 +621,7 @@ export const Route = createFileRoute('/api/skills')({
           })
 
           const result = await response.json()
+          if (response.ok) swrBust('skills')
           return json(result, { status: response.status })
         } catch (err) {
           return json(

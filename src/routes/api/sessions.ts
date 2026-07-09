@@ -14,6 +14,7 @@ import {
   updateSession,
 } from '../../server/claude-api'
 import { createCapabilityUnavailablePayload } from '@/lib/feature-gates'
+import { swrCached, swrBust } from '../../server/swr-cache'
 import {
   deleteLocalSession,
   getLocalSession,
@@ -40,29 +41,41 @@ export const Route = createFileRoute('/api/sessions')({
         }
 
         try {
-          const sessions = await listSessions(50, 0)
-          const gatewaySessions = sessions.map(toSessionSummary)
+          // The agent's rich session listing takes 3-4s and this endpoint
+          // backs the sidebar on EVERY page — cache it (SWR) so tab
+          // switches don't re-pay it. POST below busts the key.
+          const gatewaySessions = await swrCached(
+            'sessions:list',
+            15_000,
+            async () => {
+              const sessions = await listSessions(50, 0)
+              const summaries = sessions.map(toSessionSummary)
 
-          // Merge local portable sessions (Ollama, Atomic Chat, etc.)
-          const localSessions = listLocalSessions()
-          const gatewayIds = new Set(gatewaySessions.map((s: any) => s.key || s.id))
-          for (const ls of localSessions) {
-            if (!gatewayIds.has(ls.id)) {
-              gatewaySessions.push({
-                key: ls.id,
-                id: ls.id,
-                friendlyId: ls.id,
-                title: ls.title || 'Local Chat',
-                label: ls.title || 'Local Chat',
-                derivedTitle: ls.title || 'Local Chat',
-                startedAt: ls.createdAt,
-                updatedAt: ls.updatedAt,
-                message_count: ls.messageCount,
-                model: ls.model,
-                source: 'local',
-              } as any)
-            }
-          }
+              // Merge local portable sessions (Ollama, Atomic Chat, etc.)
+              const localSessions = listLocalSessions()
+              const gatewayIds = new Set(
+                summaries.map((s: any) => s.key || s.id),
+              )
+              for (const ls of localSessions) {
+                if (!gatewayIds.has(ls.id)) {
+                  summaries.push({
+                    key: ls.id,
+                    id: ls.id,
+                    friendlyId: ls.id,
+                    title: ls.title || 'Local Chat',
+                    label: ls.title || 'Local Chat',
+                    derivedTitle: ls.title || 'Local Chat',
+                    startedAt: ls.createdAt,
+                    updatedAt: ls.updatedAt,
+                    message_count: ls.messageCount,
+                    model: ls.model,
+                    source: 'local',
+                  } as any)
+                }
+              }
+              return summaries
+            },
+          )
 
           return json({ sessions: gatewaySessions })
         } catch (err) {
@@ -280,6 +293,7 @@ export const Route = createFileRoute('/api/sessions')({
         // gateway. Delete them locally without hitting the gateway.
         if (getLocalSession(sessionKey)) {
           deleteLocalSession(sessionKey)
+          swrBust('sessions')
           return json({ ok: true, sessionKey, source: 'local' })
         }
 
@@ -295,6 +309,7 @@ export const Route = createFileRoute('/api/sessions')({
         try {
           await deleteSession(sessionKey)
 
+          swrBust('sessions')
           return json({ ok: true, sessionKey })
         } catch (err) {
           return json(

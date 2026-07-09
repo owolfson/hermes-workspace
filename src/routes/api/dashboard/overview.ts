@@ -59,10 +59,11 @@ type OverviewCacheEntry = {
   lastGood: DashboardOverview | null
 }
 const overviewCache = new Map<string, OverviewCacheEntry>()
-// 120s: the analytics window is 30 days — 2-minute freshness is plenty, and
-// each rebuild costs the hermes-dashboard ~20-40s of threadpool work. Client
+// 10 min: the analytics window is 30 days — freshness beyond that is noise,
+// and each rebuild costs the hermes-dashboard ~20-40s of GIL-heavy work that
+// slows every other endpoint it serves (skills, cron) while it runs. Client
 // polls every 30s and gets the cached copy instantly either way.
-const OVERVIEW_TTL_MS = 120_000
+const OVERVIEW_TTL_MS = 600_000
 
 export const Route = createFileRoute('/api/dashboard/overview')({
   server: {
