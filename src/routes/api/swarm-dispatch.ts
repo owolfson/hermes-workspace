@@ -1018,6 +1018,32 @@ function runWorker(assignment: AssignmentRequest, timeoutMs: number, roster: Swa
           }
         } else {
           result.checkpointStatus = 'not-requested'
+          // Fire-and-forget dispatch (Conductor missions): the worker's exit
+          // is the only reliable completion signal, so record its stdout
+          // checkpoint here too — otherwise a worker that never writes its
+          // checkpoint to runtime.json/chat DB (common for one-shot
+          // `chat -q` runs) leaves its assignment 'dispatched' and the
+          // mission stuck 'executing' forever.
+          const checkpoint: ParsedSwarmCheckpoint =
+            parseSwarmCheckpoint(out) ?? {
+              stateLabel: 'DONE',
+              runtimeState: 'idle',
+              checkpointStatus: 'done',
+              filesChanged: null,
+              commandsRun: null,
+              result: `worker exited cleanly without emitting a checkpoint; output tail: ${out.slice(-400).trim() || '(empty)'}`,
+              blocker: null,
+              nextAction: null,
+              raw: out.slice(-1000),
+            }
+          recordMissionCheckpoint({
+            missionId: options?.missionId,
+            assignmentId: assignment.assignmentId ?? null,
+            workerId,
+            checkpoint,
+            source: 'swarm-dispatch-exit',
+          })
+          result.checkpoint = checkpoint
         }
         markDispatchResult(workerId, result)
         recordDispatchBlock(workerId, assignment, result, options)
