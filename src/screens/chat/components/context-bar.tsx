@@ -150,6 +150,69 @@ function ContextBarComponent({
     )
   }
 
+  if (_compact) {
+    return (
+      <PreviewCard>
+        <PreviewCardTrigger className="inline-block cursor-pointer">
+          <div className={cn(
+            "inline-flex items-center gap-1.5 px-2 py-1 rounded-full border text-[10px] font-semibold tabular-nums shadow-sm transition-colors",
+            isCritical 
+              ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-900/30 dark:bg-red-950/20 dark:text-red-400" 
+              : isDanger 
+                ? "border-orange-200 bg-orange-50 text-orange-700 hover:bg-orange-100 dark:border-orange-900/30 dark:bg-orange-950/20 dark:text-orange-400" 
+                : isWarning 
+                  ? "border-yellow-200 bg-yellow-50/50 text-yellow-700 hover:bg-yellow-100/50 dark:border-yellow-900/30 dark:bg-yellow-950/10 dark:text-yellow-400" 
+                  : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-900/30 dark:bg-emerald-950/20 dark:text-emerald-400"
+          )}>
+            <span className={cn("w-1.5 h-1.5 rounded-full animate-pulse", barColor)} />
+            <span className="font-semibold">{Math.round(clampedPct)}%</span>
+            <span className="opacity-70 font-normal">
+              {formatTokens(ctx.usedTokens)}/{formatTokens(ctx.maxTokens)}
+            </span>
+          </div>
+        </PreviewCardTrigger>
+
+        <PreviewCardPopup
+          align="end"
+          sideOffset={6}
+          className="w-64 px-3 py-2.5 rounded-lg"
+        >
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium text-primary-900">
+                Context Window
+              </span>
+              <span className={cn('text-[11px]', textColor)}>
+                {Math.round(clampedPct)}%
+              </span>
+            </div>
+            <div className={cn('w-full h-2 rounded-full overflow-hidden', barBg)}>
+              <div
+                className={cn('h-full rounded-full transition-all duration-500', barColor)}
+                style={{ width: `${clampedPct}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-primary-500 tabular-nums">
+                {formatTokens(ctx.usedTokens)} / {formatTokens(ctx.maxTokens)} tokens
+              </span>
+              {ctx.model && (
+                <span className="text-[10px] text-primary-400 truncate max-w-[100px]">
+                  {ctx.model}
+                </span>
+              )}
+            </div>
+            {isCritical && (
+              <p className="text-[10px] text-red-600 font-medium">
+                Context almost full — consider starting a new chat
+              </p>
+            )}
+          </div>
+        </PreviewCardPopup>
+      </PreviewCard>
+    )
+  }
+
   return (
     <PreviewCard>
       <PreviewCardTrigger className="block w-full cursor-pointer">

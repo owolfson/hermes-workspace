@@ -49,6 +49,11 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'gemini-2.5-flash': 1_000_000,
   'gemini-2.5-pro': 1_000_000,
   'kimi-k2.6': 256_000,
+  'qwen3.6-27b-dense': 65536,
+  'qwen3-4b': 32768,
+  'gemma-4-e4b': 32768,
+  'qwen': 65536,
+  'gemma': 32768,
 }
 
 const CHARS_PER_TOKEN = 3.5
