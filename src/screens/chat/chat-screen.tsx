@@ -503,6 +503,7 @@ export function ChatScreen({
     Array<ApprovalRequest>
   >([])
   const [isCompacting, setIsCompacting] = useState(false)
+  const compactionStuckTimerRef = useRef<number | null>(null)
   const [researchResetKey, setResearchResetKey] = useState(0)
   // Per-session thinking level — stored in sessionStorage keyed by session
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(() => {
@@ -772,11 +773,35 @@ export function ChatScreen({
     }, []),
     onCompactionStart: useCallback(() => {
       setIsCompacting(true)
+      if (compactionStuckTimerRef.current !== null) {
+        window.clearTimeout(compactionStuckTimerRef.current)
+      }
+      // Backstop: both the structured 'end' event and the message-count-drop
+      // heuristic in use-realtime-chat-history depend on signals that can be
+      // missed (dropped SSE event, a poll skipped mid-stream, a container
+      // restart mid-compaction). Without this, a missed signal leaves the
+      // composer showing "Compacting context..." forever until manual reload.
+      compactionStuckTimerRef.current = window.setTimeout(() => {
+        setIsCompacting(false)
+        compactionStuckTimerRef.current = null
+      }, 120_000)
     }, []),
     onCompactionEnd: useCallback(() => {
       setIsCompacting(false)
+      if (compactionStuckTimerRef.current !== null) {
+        window.clearTimeout(compactionStuckTimerRef.current)
+        compactionStuckTimerRef.current = null
+      }
     }, []),
   })
+
+  useEffect(() => {
+    return () => {
+      if (compactionStuckTimerRef.current !== null) {
+        window.clearTimeout(compactionStuckTimerRef.current)
+      }
+    }
+  }, [])
 
   // Keep activity stream open persistently — opens on mount so it's ready
   // before the first tool call fires (avoids connection latency gap).
