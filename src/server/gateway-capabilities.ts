@@ -286,6 +286,10 @@ export async function fetchDashboardToken(options?: {
   const force = options?.force === true
 
   if (!force && dashboardTokenCache) return dashboardTokenCache
+  if (BEARER_TOKEN) {
+    dashboardTokenCache = BEARER_TOKEN
+    return BEARER_TOKEN
+  }
   if (!force && dashboardTokenPromise) return dashboardTokenPromise
 
   dashboardTokenPromise = (async () => {

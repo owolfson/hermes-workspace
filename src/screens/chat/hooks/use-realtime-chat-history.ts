@@ -173,7 +173,14 @@ export function useRealtimeChatHistory({
     void backfillHistory()
   }, [backfillHistory, effectiveSessionKey, enabled])
 
-  const { connectionState, lastError, reconnect } = useChatStream({
+  // connectionState/lastError come from the real store (set by
+  // use-streaming-message.ts around actual /api/send-stream attempts) —
+  // useChatStream itself is a stub kept only to satisfy this call's other
+  // callbacks (onReconnect/onSilentTimeout), its own connectionState/
+  // lastError/reconnect outputs are never real and must not be used.
+  const connectionState = useChatStore((s) => s.connectionState)
+  const lastError = useChatStore((s) => s.lastError)
+  const { reconnect } = useChatStream({
     sessionKey: effectiveSessionKey === 'new' ? undefined : effectiveSessionKey,
     enabled: enabled && effectiveSessionKey !== 'new',
     onReconnect: useCallback(() => {

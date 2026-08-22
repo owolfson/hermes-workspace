@@ -223,6 +223,7 @@ export function useStreamingMessage(options: UseStreamingMessageOptions = {}) {
     acceptedAtRef.current = now
     lastActivityAtRef.current = now
     lifecyclePhaseRef.current = 'accepted'
+    useChatStore.getState().setConnectionState('connected')
   }, [])
 
   const markFailed = useCallback(
@@ -242,6 +243,7 @@ export function useStreamingMessage(options: UseStreamingMessageOptions = {}) {
       }))
       onError?.(message)
       useChatStore.getState().setHeartbeatActivity(null)
+      useChatStore.getState().setConnectionState('error', message)
     },
     [
       clearHandoffTimer,
@@ -856,6 +858,7 @@ export function useStreamingMessage(options: UseStreamingMessageOptions = {}) {
         error: null,
       })
       useChatStore.getState().setHeartbeatActivity(null)
+      useChatStore.getState().setConnectionState('connecting')
 
       try {
         const response = await fetch('/api/send-stream', {
@@ -1014,6 +1017,13 @@ export function useStreamingMessage(options: UseStreamingMessageOptions = {}) {
             isStreaming: false,
           }))
           const abortedPhase = lifecyclePhaseRef.current as StreamLifecyclePhase
+          // If we aborted before the request was ever accepted, connectionState
+          // is stuck at 'connecting' (set at request start) — nothing else will
+          // clear it since neither markAccepted nor markFailed ran. Once accepted
+          // it's genuinely 'connected' (interrupted by the user, not a failure).
+          if (abortedPhase === 'requesting') {
+            useChatStore.getState().setConnectionState('disconnected')
+          }
           if (abortedPhase === 'handoff') {
             schedulePostAcceptanceTimeout('handoff')
             return

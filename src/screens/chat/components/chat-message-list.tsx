@@ -211,11 +211,32 @@ function ThinkingBubble({
     uniqueNames.length > 0
       ? `Using: ${uniqueNames.slice(0, 3).join(', ')}${uniqueNames.length > 3 ? ` +${uniqueNames.length - 3} more` : ''}`
       : null
+
+  // Latch once we've seen a delegate/spawn tool call THIS turn, even after
+  // its own call completes. delegate_task is fire-and-forget: the call
+  // itself finishes in seconds (it just dispatches a subagent), then drops
+  // out of activeToolCalls entirely while the actual subagent keeps working
+  // for real (often minutes - confirmed live 2026-08-21 by inspecting a
+  // stuck session directly: the dispatching turn was still legitimately
+  // running 38+ minutes later). Without this, the bubble falls back to a
+  // generic "Thinking…" with no indication anything was ever delegated,
+  // which reads as the model being stuck/slow when it's actually just
+  // waiting on real background work it can't report progress on.
+  const sawDelegateRef = useRef(false)
+  if (
+    activeToolCalls.some((tc) => /delegate|spawn/.test(tc.name)) ||
+    liveToolActivity.some((a) => /delegate|spawn/.test(a.name))
+  ) {
+    sawDelegateRef.current = true
+  }
+
   const statusLabel = isCompacting
     ? 'Compacting context...'
     : forceSimple
       ? 'Thinking…'
-      : activityLabel || heartbeatActivity || 'Thinking…'
+      : activityLabel ||
+        heartbeatActivity ||
+        (sawDelegateRef.current ? '🤖 Waiting on delegated subagent…' : 'Thinking…')
 
   // Elapsed time counter — counts from bubble mount, not from last label change
   const [elapsed, setElapsed] = useState(0)
@@ -357,11 +378,23 @@ function ThinkingBubble({
           </div>
 
           {isStale ? (
-            <span className="text-[11px] text-amber-500 dark:text-amber-400 animate-pulse">
-              {isVeryStale
-                ? 'Still thinking… this is taking a while'
-                : 'Taking longer than usual…'}
-            </span>
+            sawDelegateRef.current ? (
+              // A delegated subagent can legitimately run for many minutes
+              // (confirmed live: 38+ min for a real backtest) - the same
+              // amber "something's wrong" alarm styling used for a genuinely
+              // stuck foreground turn is actively misleading here. Neutral
+              // framing, no pulse.
+              <span className="text-[11px] text-primary-500 dark:text-primary-400">
+                Subagent still working in the background - this can take
+                several minutes.
+              </span>
+            ) : (
+              <span className="text-[11px] text-amber-500 dark:text-amber-400 animate-pulse">
+                {isVeryStale
+                  ? 'Still thinking… this is taking a while'
+                  : 'Taking longer than usual…'}
+              </span>
+            )
           ) : null}
         </div>
 

@@ -49,6 +49,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'gemini-2.5-flash': 1_000_000,
   'gemini-2.5-pro': 1_000_000,
   'kimi-k2.6': 256_000,
+  'qwen3.8-27b-dense': 262144,
   'qwen3.6-27b-dense': 131072,
   'qwen3-4b': 32768,
   'gemma-4-e4b': 32768,

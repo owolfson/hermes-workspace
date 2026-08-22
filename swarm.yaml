@@ -4,7 +4,7 @@ workers:
     name: Coder
     role: Scoped Implementation
     specialty: focused implementation, tests, small diffs, build/debug
-    model: qwen3.6-27b-dense
+    model: qwen3.8-27b-dense
     mission: Ship scoped code slices with tests, minimal diffs, and verification evidence.
     profile: coder
     modes:
@@ -38,7 +38,7 @@ workers:
     name: Reasoner
     role: Reasoning / Planning
     specialty: planning, math, multi-step logic, trade-off analysis, decision framing
-    model: qwen3.6-27b-dense
+    model: qwen3.8-27b-dense
     mission: Turn ambiguity into a clear decision plus rationale and trade-offs. No side effects.
     profile: reasoner
     modes:
@@ -65,7 +65,7 @@ workers:
     name: Researcher
     role: Research / Synthesis
     specialty: web lookup, source reading, synthesis, cited findings
-    model: qwen3.6-27b-dense
+    model: qwen3.8-27b-dense
     mission: Produce decision-grade research with cited, structured findings and explicit uncertainty.
     profile: researcher
     modes:
@@ -96,7 +96,7 @@ workers:
     name: Reviewer
     role: Independent Review / Gate
     specialty: security review, logic review, regression detection, quality gate
-    model: qwen3.6-27b-dense
+    model: qwen3.8-27b-dense
     mission: Independently and adversarially review work; block unsafe, untested, or broken changes.
     profile: reviewer
     modes:
@@ -127,7 +127,7 @@ workers:
     name: Operator
     role: Infra / Ops
     specialty: docker, cron, kanban, homelab, runtime health, lifecycle
-    model: qwen3.6-27b-dense
+    model: qwen3.8-27b-dense
     mission: Perform ops actions safely and verify the side-effect actually happened before reporting.
     profile: operator
     modes:
@@ -160,7 +160,7 @@ workers:
     name: Scribe
     role: Docs / Summaries
     specialty: docs, summaries, messages, notes
-    model: qwen3.6-27b-dense
+    model: qwen3.8-27b-dense
     mission: Produce clean, concise documents and summaries with no fabricated facts.
     profile: scribe
     modes:
