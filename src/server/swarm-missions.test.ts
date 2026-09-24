@@ -387,4 +387,57 @@ describe('swarm-missions', () => {
     expect(persisted.missions[0]?.state).toBe('executing')
     expect(persisted.missions[0]?.events).toHaveLength(0)
   })
+
+  it('pauses and resumes a mission: the flag persists, events are recorded, and queued work is held', async () => {
+    const mod = await loadModule()
+    const mission = mod.createOrUpdateMission({
+      missionId: 'mission-pause-1',
+      title: 'Pause test',
+      assignments: [
+        { workerId: 'builder', task: 'Step 1', reviewRequired: false },
+        { workerId: 'reviewer', task: 'Step 2', reviewRequired: false, dependsOn: [] },
+      ],
+    })
+    // Both are queued and ready before pausing.
+    expect(mod.readyQueuedAssignments(mission.id)).toHaveLength(2)
+
+    const paused = mod.setSwarmMissionPaused({ missionId: mission.id, paused: true, actor: 'conductor' })
+    expect(paused?.mission.paused).toBe(true)
+    expect(paused?.changed).toBe(true)
+    expect(mod.getSwarmMission(mission.id)?.paused).toBe(true) // persisted, not just returned
+    expect(mod.readyQueuedAssignments(mission.id)).toEqual([])
+    expect(mod.getSwarmMission(mission.id)?.events.at(-1)?.type).toBe('mission_paused')
+
+    // Pausing twice is a no-op.
+    expect(mod.setSwarmMissionPaused({ missionId: mission.id, paused: true })?.changed).toBe(false)
+
+    const resumed = mod.setSwarmMissionPaused({ missionId: mission.id, paused: false, actor: 'conductor' })
+    expect(resumed?.mission.paused).toBe(false)
+    expect(mod.readyQueuedAssignments(mission.id)).toHaveLength(2)
+    expect(mod.getSwarmMission(mission.id)?.events.at(-1)?.type).toBe('mission_resumed')
+  })
+
+  it('does not pause unknown, cancelled or completed missions', async () => {
+    const mod = await loadModule()
+    expect(mod.setSwarmMissionPaused({ missionId: 'nope', paused: true })).toBeNull()
+    const mission = mod.createOrUpdateMission({
+      missionId: 'mission-pause-2',
+      title: 'Cancelled',
+      assignments: [{ workerId: 'builder', task: 'x', reviewRequired: false }],
+    })
+    mod.cancelSwarmMission({ missionId: mission.id })
+    expect(mod.setSwarmMissionPaused({ missionId: mission.id, paused: true })?.changed).toBe(false)
+    expect(mod.getSwarmMission(mission.id)?.paused).toBeFalsy()
+  })
+
+  it('finds open missions that involve a worker', async () => {
+    const mod = await loadModule()
+    mod.createOrUpdateMission({
+      missionId: 'mission-find-1',
+      title: 'Find',
+      assignments: [{ workerId: 'builder', task: 'x', reviewRequired: false }],
+    })
+    expect(mod.findOpenMissionIdsForWorker('builder')).toEqual(['mission-find-1'])
+    expect(mod.findOpenMissionIdsForWorker('reviewer')).toEqual([])
+  })
 })

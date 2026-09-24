@@ -77,9 +77,27 @@ export function parseSwarmCheckpoint(text: string): ParsedSwarmCheckpoint | null
   }
 }
 
-export function newestCheckpointFromMessages(messages: Array<{ role?: string; content: string; timestamp?: number | null }>): ParsedSwarmCheckpoint | null {
+// Worker chat DBs keep the whole history, so the "newest checkpoint" can be a
+// DONE left over from a previous mission. Pass the dispatch time as notBeforeMs
+// to only accept checkpoints written after it. Chat DBs store epoch seconds,
+// dispatch times are epoch ms, so timestamps are normalized before comparing.
+function messageTimestampMs(timestamp: number | null | undefined): number | null {
+  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp <= 0) return null
+  return timestamp < 1e12 ? timestamp * 1000 : timestamp
+}
+
+export function newestCheckpointFromMessages(
+  messages: Array<{ role?: string; content: string; timestamp?: number | null }>,
+  options: { notBeforeMs?: number | null } = {},
+): ParsedSwarmCheckpoint | null {
+  const notBeforeMs = options.notBeforeMs ?? null
   for (const message of [...messages].reverse()) {
     if (message.role && message.role !== 'assistant') continue
+    if (notBeforeMs !== null) {
+      // An undated message cannot be proven fresh, so it does not count.
+      const at = messageTimestampMs(message.timestamp)
+      if (at === null || at < notBeforeMs) continue
+    }
     const parsed = parseSwarmCheckpoint(message.content)
     if (parsed) return parsed
   }

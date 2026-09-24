@@ -1708,7 +1708,7 @@ export function useConductorGateway() {
       const response = await fetch('/api/agent-pause', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionKey: sessionKey.trim(), pause }),
+        body: JSON.stringify({ sessionKey: sessionKey.trim(), pause, missionId: missionId ?? undefined }),
       })
 
       if (!response.ok) {

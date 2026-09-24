@@ -81,7 +81,9 @@ type RuntimeCheckpointSnapshot = {
 
 const MAX_PROMPT_CHARS = 32_000
 const MAX_OUTPUT_CHARS = 200_000
-const DEFAULT_TIMEOUT_S = 240
+// Measured: a one-word prompt takes ~85s on this stack (agent startup ~50s + prefill), so a
+// real multi-turn task cannot fit in 240s. Default to the cap; callers may still pass less.
+const DEFAULT_TIMEOUT_S = 600
 const MAX_TIMEOUT_S = 600
 
 function getProfilesDir(): string {
@@ -490,16 +492,41 @@ function markDispatchStarted(workerId: string, task: string, missionId?: string 
   })
 }
 
-function markDispatchResult(workerId: string, result: WorkerResult): void {
+export function markDispatchResult(workerId: string, result: WorkerResult): void {
+  // A run that already produced a terminal checkpoint is finished: reporting the dispatch
+  // afterwards (fire-and-forget exit path) must not drag the worker back to "executing".
+  const finished = result.ok && Boolean(result.checkpoint) && result.checkpoint?.checkpointStatus !== 'in_progress'
   writeRuntimePatch(workerId, {
     lastDispatchAt: Date.now(),
     lastDispatchMode: result.delivery ?? 'none',
     lastDispatchResult: result.ok ? result.output.slice(0, 500) : (result.error ?? 'dispatch failed').slice(0, 500),
-    state: result.ok ? 'executing' : 'blocked',
-    checkpointStatus: result.ok ? 'in_progress' : 'blocked',
-    blockedReason: result.ok ? null : result.error,
+    ...(finished
+      ? {}
+      : {
+          state: result.ok ? 'executing' : 'blocked',
+          checkpointStatus: result.ok ? 'in_progress' : 'blocked',
+          blockedReason: result.ok ? null : result.error,
+        }),
     lastCheckIn: new Date().toISOString(),
   })
+}
+
+// execFile reports a timeout kill (SIGTERM) as "Command failed: <full command line>"
+// with empty stderr, so a slow worker looked like an unexplained crash. Say what
+// actually happened; a Hermes worker needs ~50s just to start plus model turns.
+export function describeOneshotFailure(input: {
+  message: string
+  killed?: boolean
+  signal?: string | null
+  stderr: string
+  timeoutMs: number
+}): string {
+  const stderr = input.stderr.trim()
+  if (input.killed && input.signal === 'SIGTERM') {
+    const timedOut = `Worker timed out after ${Math.round(input.timeoutMs / 1000)}s and was stopped before it returned a checkpoint. Re-dispatch with a larger timeoutSeconds (max ${MAX_TIMEOUT_S}) if the task legitimately needs longer.`
+    return stderr ? `${timedOut} Worker output: ${stderr}` : timedOut
+  }
+  return stderr || input.message
 }
 
 export function dispatchBlockReason(result: Pick<WorkerResult, 'ok' | 'error' | 'output' | 'checkpointStatus'>): string | null {
@@ -529,7 +556,7 @@ function recordDispatchBlock(workerId: string, assignment: AssignmentRequest, re
   })
 }
 
-function markCheckpointResult(workerId: string, checkpoint: ParsedSwarmCheckpoint, notifySessionKey?: string | null): void {
+export function markCheckpointResult(workerId: string, checkpoint: ParsedSwarmCheckpoint, notifySessionKey?: string | null): void {
   // When the checkpoint reaches any terminal status (anything other than
   // 'in_progress' — i.e. done/blocked/needs_input/handoff) the worker is no
   // longer running this task, so clear currentTask the same way conductor-stop
@@ -576,7 +603,7 @@ async function waitForFreshCheckpoint(
 
     const chat = readWorkerMessages(profilePath, 50)
     if (chat.ok) {
-      const checkpoint = newestCheckpointFromMessages(chat.messages)
+      const checkpoint = newestCheckpointFromMessages(chat.messages, { notBeforeMs: dispatchedAt })
       if (checkpoint && checkpoint.raw !== previousRaw) return checkpoint
     }
     await sleep(2_000)
@@ -612,12 +639,46 @@ function redactStartupOutput(output: string): string {
     .replace(/(gh[pousr]_[A-Za-z0-9_]{12,})/g, '[REDACTED]')
 }
 
+export type HermesTuiState = 'unknown' | 'starting' | 'ready' | 'busy'
+
+// `hermes chat --tui` draws its prompt immediately but the agent behind it needs
+// ~50s to start (measured); text pasted before then is silently lost. The status
+// bar tells the truth: " ─ starting agent… │ ..." then " ─ ready │ ...".
+export function classifyHermesTuiPane(pane: string): HermesTuiState {
+  const bars = [...pane.matchAll(/^\s*─\s*([^│\n]+?)\s*│/gm)]
+  const last = bars[bars.length - 1]
+  if (!last) return 'unknown'
+  const label = last[1].trim().toLowerCase()
+  if (label.startsWith('forging session') || label.startsWith('starting agent')) return 'starting'
+  if (label === 'ready') return 'ready'
+  return 'busy'
+}
+
+// A fresh worker never got its task if we paste at 1.2s. Wait for the TUI to be up,
+// with headroom over the ~50s measured startup on a loaded V100.
+const TUI_READY_TIMEOUT_MS = 120_000
+const TUI_READY_POLL_MS = 1_000
+// An already-running worker is normally up; only cover a relaunch that is mid-start.
+const TUI_EXISTING_SESSION_WAIT_MS = 60_000
+
+async function waitForTuiUp(tmuxBin: string, sessionName: string, maxMs: number): Promise<void> {
+  const deadline = Date.now() + maxMs
+  while (Date.now() < deadline) {
+    const pane = await captureTmuxPane(tmuxBin, sessionName)
+    const state = classifyHermesTuiPane(pane)
+    if (state === 'ready' || state === 'busy') return
+    if (/(?:^|\n)\[Hermes worker exited with status/.test(pane)) return
+    await sleep(TUI_READY_POLL_MS)
+  }
+}
+
 async function ensureLiveTmuxSession(workerId: string): Promise<{ ok: true; tmuxBin: string; sessionName: string } | { ok: false; error: string }> {
   const tmuxBin = resolveTmuxBin()
   if (!tmuxBin) return { ok: false, error: 'tmux not installed' }
 
   const sessionName = sessionNameFor(workerId)
   if (await tmuxHasSession(tmuxBin, sessionName)) {
+    await waitForTuiUp(tmuxBin, sessionName, TUI_EXISTING_SESSION_WAIT_MS)
     return { ok: true, tmuxBin, sessionName }
   }
 
@@ -648,28 +709,39 @@ async function ensureLiveTmuxSession(workerId: string): Promise<{ ok: true; tmux
     return { ok: false, error: launched.error }
   }
 
-  // Give the agent a moment to render its prompt before sending keys. If Hermes
-  // exits immediately, the shell stays alive and prints a sentinel that lets us
-  // surface the real startup failure instead of a later tmux "can't find pane".
-  await sleep(1200)
-  if (!(await tmuxHasSession(tmuxBin, sessionName))) {
-    return { ok: false, error: `Hermes worker tmux session ${sessionName} exited during startup` }
-  }
-
-  const startupOutput = await captureTmuxPane(tmuxBin, sessionName)
+  // Wait for the agent to actually be up before any keys are sent (see
+  // classifyHermesTuiPane). If Hermes exits immediately, the shell stays alive and
+  // prints a sentinel that lets us surface the real startup failure instead of a
+  // later tmux "can't find pane".
   // Match only at the start of a line so the echoed shell command's printf
   // format string doesn't trigger a false positive startup-failure sentinel.
   const exitedPattern = /(?:^|\n)\[Hermes worker exited with status/
-  if (exitedPattern.test(startupOutput)) {
-    const sanitizedOutput = redactStartupOutput(startupOutput).slice(-4_000)
-    const logsDir = join(profilePath, 'logs')
-    mkdirSync(logsDir, { recursive: true })
-    const startupLogPath = join(logsDir, 'swarm-dispatch-startup.log')
-    writeFileSync(startupLogPath, `${new Date().toISOString()} ${sanitizedOutput}
+  const readyDeadline = Date.now() + TUI_READY_TIMEOUT_MS
+  for (;;) {
+    await sleep(TUI_READY_POLL_MS)
+    if (!(await tmuxHasSession(tmuxBin, sessionName))) {
+      return { ok: false, error: `Hermes worker tmux session ${sessionName} exited during startup` }
+    }
+    const startupOutput = await captureTmuxPane(tmuxBin, sessionName)
+    if (exitedPattern.test(startupOutput)) {
+      const sanitizedOutput = redactStartupOutput(startupOutput).slice(-4_000)
+      const logsDir = join(profilePath, 'logs')
+      mkdirSync(logsDir, { recursive: true })
+      const startupLogPath = join(logsDir, 'swarm-dispatch-startup.log')
+      writeFileSync(startupLogPath, `${new Date().toISOString()} ${sanitizedOutput}
 `, { flag: 'a' })
-    return {
-      ok: false,
-      error: `Hermes worker failed to start in tmux session ${sessionName}. Startup output saved to ${startupLogPath}: ${sanitizedOutput}`,
+      return {
+        ok: false,
+        error: `Hermes worker failed to start in tmux session ${sessionName}. Startup output saved to ${startupLogPath}: ${sanitizedOutput}`,
+      }
+    }
+    const state = classifyHermesTuiPane(startupOutput)
+    if (state === 'ready' || state === 'busy') break
+    if (Date.now() >= readyDeadline) {
+      return {
+        ok: false,
+        error: `Hermes worker TUI in ${sessionName} was still starting after ${Math.round(TUI_READY_TIMEOUT_MS / 1000)}s; the task was not sent into a TUI that is not ready`,
+      }
     }
   }
 
@@ -957,7 +1029,13 @@ function runWorker(assignment: AssignmentRequest, timeoutMs: number, roster: Swa
             workerId,
             ok: false,
             output: out,
-            error: stderrStr.trim() || error.message,
+            error: describeOneshotFailure({
+              message: error.message,
+              killed: (error as { killed?: boolean }).killed,
+              signal: (error as { signal?: string | null }).signal ?? null,
+              stderr: stderrStr,
+              timeoutMs,
+            }),
             durationMs,
             exitCode: typeof code === 'number' ? code : null,
             delivery: 'oneshot',
@@ -1043,6 +1121,7 @@ function runWorker(assignment: AssignmentRequest, timeoutMs: number, roster: Swa
             checkpoint,
             source: 'swarm-dispatch-exit',
           })
+          markCheckpointResult(workerId, checkpoint, options?.notifySessionKey ?? 'main')
           result.checkpoint = checkpoint
         }
         markDispatchResult(workerId, result)

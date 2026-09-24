@@ -21,6 +21,11 @@ export const Route = createFileRoute('/api/commands')({
         try {
           const res = await gatewayFetch('/v1/commands')
 
+          // The gateway has no /v1/commands (optional feature). The composer already falls
+          // back to its built-in slash commands + installed skills, so answer "none" rather
+          // than a failed request that every page load logs as an error.
+          if (res.status === 404) return json({ commands: [] })
+
           if (!res.ok) {
             return json(
               { error: `Gateway responded with status ${res.status}` },

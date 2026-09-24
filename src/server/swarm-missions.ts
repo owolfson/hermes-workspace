@@ -23,7 +23,7 @@ export type SwarmMissionAssignment = {
 
 export type SwarmMissionEvent = {
   id: string
-  type: 'created' | 'assignment_dispatched' | 'checkpoint' | 'continuation' | 'review' | 'blocked' | 'assignment_cancelled' | 'mission_cancelled'
+  type: 'created' | 'assignment_dispatched' | 'checkpoint' | 'continuation' | 'review' | 'blocked' | 'assignment_cancelled' | 'mission_cancelled' | 'mission_paused' | 'mission_resumed'
   at: number
   workerId?: string
   assignmentId?: string
@@ -53,6 +53,8 @@ export type SwarmMission = {
   state: SwarmMissionState
   createdAt: number
   updatedAt: number
+  /** While true no queued assignment is released; running workers finish their current turn. */
+  paused?: boolean
   assignments: Array<SwarmMissionAssignment>
   events: Array<SwarmMissionEvent>
 }
@@ -396,7 +398,7 @@ export function appendMissionContinuation(input: {
 
 export function readyQueuedAssignments(missionId: string): Array<SwarmMissionAssignment> {
   const mission = getSwarmMission(missionId)
-  if (!mission) return []
+  if (!mission || mission.paused) return []
   const doneIds = new Set(mission.assignments.filter((item) => ['checkpointed', 'done'].includes(item.state)).map((item) => item.id))
   return mission.assignments.filter((item) => item.state === 'queued' && item.dependsOn.every((id) => doneIds.has(id)))
 }
@@ -436,6 +438,37 @@ export function cancelSwarmAssignment(input: {
   mission.state = deriveMissionState(mission.assignments)
   writeStore(store)
   return { mission, assignment, changed: true }
+}
+
+const OPEN_MISSION_STATES = new Set<SwarmMissionState>(['planning', 'dispatching', 'executing', 'reviewing', 'blocked'])
+
+/** Missions still in flight that have an assignment for this worker (newest first). */
+export function findOpenMissionIdsForWorker(workerId: string): Array<string> {
+  return readStore()
+    .missions.filter((mission) => OPEN_MISSION_STATES.has(mission.state) && mission.assignments.some((assignment) => assignment.workerId === workerId))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map((mission) => mission.id)
+}
+
+export function setSwarmMissionPaused(input: {
+  missionId?: string | null
+  paused: boolean
+  actor?: string | null
+}): { mission: SwarmMission; changed: boolean } | null {
+  if (!input.missionId) return null
+  const store = readStore()
+  const mission = store.missions.find((item) => item.id === input.missionId)
+  if (!mission) return null
+  // A finished or cancelled mission has nothing left to hold or release.
+  if (!OPEN_MISSION_STATES.has(mission.state)) return { mission, changed: false }
+  if (Boolean(mission.paused) === input.paused) return { mission, changed: false }
+  mission.paused = input.paused
+  mission.updatedAt = now()
+  mission.events.push(event(input.paused ? 'mission_paused' : 'mission_resumed', input.paused ? 'Mission paused' : 'Mission resumed', {
+    data: { actor: input.actor?.trim() || 'user' },
+  }))
+  writeStore(store)
+  return { mission, changed: true }
 }
 
 export function cancelSwarmMission(input: {

@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { isAuthenticated } from '../../../server/auth-middleware'
 import { listAllActiveRuns } from '../../../server/run-store'
+import { expireStaleRuns } from '../../../server/run-expiry'
 
 export const Route = createFileRoute('/api/runs/active')({
   server: {
@@ -12,6 +13,8 @@ export const Route = createFileRoute('/api/runs/active')({
         }
 
         try {
+          // Self-heal: close out runs whose stream died without cleanup.
+          await expireStaleRuns().catch(() => [])
           const runs = await listAllActiveRuns()
           const now = Date.now()
           return json({

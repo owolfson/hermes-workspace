@@ -11,7 +11,7 @@ import { getSwarmMission, recordMissionCheckpoint  } from '../../server/swarm-mi
 import { getSwarmProfilePath } from '../../server/swarm-foundation'
 import { readWorkerMessages } from '../../server/swarm-chat-reader'
 import { newestCheckpointFromMessages } from '../../server/swarm-checkpoints'
-import { checkpointFromRuntimeSnapshot, dispatchSwarmAssignments, readRuntimeCheckpointSnapshot, runtimeCheckpointSignature } from './swarm-dispatch'
+import { checkpointFromRuntimeSnapshot, dispatchSwarmAssignments, markCheckpointResult, readRuntimeCheckpointSnapshot, runtimeCheckpointSignature } from './swarm-dispatch'
 import type { SwarmMission } from '../../server/swarm-missions'
 
 let cachedSkill: string | null = null
@@ -297,6 +297,7 @@ export function toNativeConductorMissionRecord(mission: SwarmMission, maxLines =
     lines: nativeMissionLines(mission, maxLines),
     exit_code: mission.state === 'blocked' || mission.state === 'cancelled' ? 1 : mission.state === 'complete' ? 0 : null,
     nativeSwarm: true,
+    paused: Boolean(mission.paused),
     modeOfficialOotb: true,
     modeNote: NATIVE_CONDUCTOR_MODE_NOTE,
     assignments: mission.assignments,
@@ -361,7 +362,9 @@ export const Route = createFileRoute('/api/conductor-spawn')({
                   if (!checkpoint || checkpoint.stateLabel === 'IN_PROGRESS') {
                     const chat = readWorkerMessages(profilePath, 50)
                     if (chat.ok) {
-                      const msgCheckpoint = newestCheckpointFromMessages(chat.messages)
+                      // Only accept a checkpoint written after THIS assignment was dispatched;
+                      // the worker's chat history still holds DONEs from earlier missions.
+                      const msgCheckpoint = newestCheckpointFromMessages(chat.messages, { notBeforeMs: assignment.dispatchedAt ?? null })
                       if (msgCheckpoint && msgCheckpoint.raw !== snapshot.checkpointRaw) {
                         checkpoint = msgCheckpoint
                       }
@@ -376,6 +379,9 @@ export const Route = createFileRoute('/api/conductor-spawn')({
                       checkpoint,
                       source: 'conductor-poll',
                     })
+                    // The mission store now says done; make the worker's own runtime agree,
+                    // otherwise the Swarm page keeps showing it as executing forever.
+                    markCheckpointResult(assignment.workerId, checkpoint, 'main')
                   }
                 } catch {
                   // runtime.json might not exist yet or be temporarily unreadable

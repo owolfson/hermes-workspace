@@ -536,7 +536,7 @@ export const Route = createFileRoute('/api/send-stream')({
                 let accumulated = ''
 
                 activeRunId = runId
-                registerActiveSendRun(runId)
+                registerActiveSendRun(runId, () => closeStream())
                 persistRunStarted(runId, portableSessionKey, portableFriendlyId)
                 unregisterTimer = setTimeout(() => {
                   if (activeRunId) {
@@ -1030,7 +1030,7 @@ export const Route = createFileRoute('/api/send-stream')({
 
                     if (runId && !activeRunId) {
                       activeRunId = runId
-                      registerActiveSendRun(runId)
+                      registerActiveSendRun(runId, () => closeStream())
                       persistRunStarted(
                         runId,
                         sessionKeyFromEvent,

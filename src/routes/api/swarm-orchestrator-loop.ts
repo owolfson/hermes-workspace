@@ -169,7 +169,10 @@ function runWorkerLoop(workerId: string, staleMs: number, dryRun: boolean): Work
     }
   }
 
-  const checkpoint = newestCheckpointFromMessages(chat.messages)
+  // Only checkpoints written after the last dispatch belong to the current task;
+  // the chat history still holds DONE checkpoints from earlier missions.
+  const lastDispatchAt = typeof current.lastDispatchAt === 'number' ? current.lastDispatchAt : null
+  const checkpoint = newestCheckpointFromMessages(chat.messages, { notBeforeMs: lastDispatchAt })
   if (checkpoint) {
     if (current.orchestratorProcessedRaw === checkpoint.raw) {
       return {

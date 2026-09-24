@@ -26,7 +26,7 @@
  */
 import {
   CLAUDE_DASHBOARD_URL,
-  fetchDashboardToken,
+  dashboardFetch as authenticatedDashboardFetch,
 } from './gateway-capabilities'
 
 const PROXY_TIMEOUT_MS = 10_000
@@ -53,26 +53,6 @@ export type DashboardKanbanBoardResponse = {
   }>
 }
 
-/**
- * Build headers for dashboard kanban API calls. The plugin route is
- * unauthenticated by design (loopback only), but we still pass the
- * dashboard session token if we have one — some setups proxy the
- * dashboard behind auth that requires it.
- */
-async function buildHeaders(): Promise<Record<string, string>> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  }
-  try {
-    const token = await fetchDashboardToken()
-    if (token) headers.Authorization = `Bearer ${token}`
-  } catch {
-    // Token fetch is best-effort. The plugin route works without it
-    // on standard loopback installs.
-  }
-  return headers
-}
-
 function dashboardUrl(path: string, params: Record<string, string | undefined> = {}): string {
   const base = CLAUDE_DASHBOARD_URL.replace(/\/+$/, '')
   const url = new URL(`${base}${path}`)
@@ -82,15 +62,18 @@ function dashboardUrl(path: string, params: Record<string, string | undefined> =
   return url.toString()
 }
 
+// The dashboard requires its session cookie on the kanban plugin routes (it answers
+// 401 {"reason":"no_cookie"} otherwise), so every call goes through the shared
+// authenticated helper, which does the password login, caches the cookie and
+// retries once on 401. Do not add a private fetch with its own auth here.
 async function dashboardFetch<T>(
   path: string,
   init: RequestInit = {},
   params: Record<string, string | undefined> = {},
 ): Promise<T> {
-  const headers = await buildHeaders()
-  const res = await fetch(dashboardUrl(path, params), {
+  const res = await authenticatedDashboardFetch(dashboardUrl(path, params), {
     ...init,
-    headers: { ...headers, ...(init.headers || {}) },
+    headers: { 'Content-Type': 'application/json', ...(init.headers || {}) },
     signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
   })
   if (!res.ok) {
