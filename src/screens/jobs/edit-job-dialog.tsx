@@ -1,10 +1,20 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { Cancel01Icon } from '@hugeicons/core-free-icons'
 import type { ClaudeJob, JobProfileOption } from '@/lib/jobs-api'
+import { fetchJobScript } from '@/lib/jobs-api'
+
+const SCRIPT_REASONS: Record<string, string> = {
+  'not-found': "Script file not found in the agent's scripts folder.",
+  unreadable:
+    "The script exists but the workspace can't read it (file permissions).",
+  'invalid-name': "The job's script isn't a plain file name, so it isn't shown.",
+  'not-a-file': "The job's script path isn't a regular file.",
+}
 
 const SCHEDULE_PRESETS = [
   { label: 'Every 15m', value: 'every 15m' },
@@ -90,6 +100,17 @@ export function EditJobDialog({
   onSubmit,
 }: EditJobDialogProps) {
   const [form, setForm] = useState(() => getInitialState(job))
+  // Script-only jobs (no_agent) run a file, not a prompt — their prompt is
+  // empty (or just a description), so the Prompt field must not be required
+  // (it blocked Save outright) and the real content is the script.
+  const isScriptJob =
+    Boolean(job?.script) && (job?.no_agent === true || !job?.prompt?.trim())
+  const scriptQuery = useQuery({
+    queryKey: ['claude', 'jobs', job?.id, 'script'],
+    queryFn: () => fetchJobScript(job!.id),
+    enabled: open && Boolean(job?.script),
+    staleTime: 30_000,
+  })
 
   useEffect(() => {
     if (!open) {
@@ -334,8 +355,64 @@ export function EditJobDialog({
                 </div>
               </section>
 
+              {job.script ? (
+                <section className="space-y-2">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <label className="text-sm font-medium">Script</label>
+                    <span
+                      className="truncate font-mono text-xs"
+                      style={{ color: 'var(--theme-muted)' }}
+                    >
+                      {job.script}
+                    </span>
+                  </div>
+                  {scriptQuery.isLoading ? (
+                    <p className="text-xs" style={{ color: 'var(--theme-muted)' }}>
+                      Loading script...
+                    </p>
+                  ) : scriptQuery.isError ? (
+                    <p className="text-xs" style={{ color: 'var(--theme-danger)' }}>
+                      Failed to load the script.
+                    </p>
+                  ) : scriptQuery.data?.script ? (
+                    <>
+                      <pre
+                        className="max-h-64 overflow-auto rounded-xl border px-3 py-2.5 font-mono text-xs leading-5"
+                        style={{
+                          background: 'var(--theme-input)',
+                          borderColor: 'var(--theme-border)',
+                          color: 'var(--theme-text)',
+                        }}
+                      >
+                        {scriptQuery.data.script.content}
+                      </pre>
+                      <p
+                        className="text-xs"
+                        style={{ color: 'var(--theme-muted)' }}
+                      >
+                        Read-only — this job runs the script directly (no
+                        agent).
+                        {scriptQuery.data.script.redactions > 0
+                          ? ` ${scriptQuery.data.script.redactions} secret-looking value${scriptQuery.data.script.redactions === 1 ? '' : 's'} hidden.`
+                          : ''}
+                        {scriptQuery.data.script.truncated
+                          ? ' Showing the first 64 KB.'
+                          : ''}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs" style={{ color: 'var(--theme-muted)' }}>
+                      {SCRIPT_REASONS[scriptQuery.data?.reason ?? ''] ??
+                        'Script contents unavailable.'}
+                    </p>
+                  )}
+                </section>
+              ) : null}
+
               <section className="space-y-2">
-                <label className="text-sm font-medium">Prompt</label>
+                <label className="text-sm font-medium">
+                  {isScriptJob ? 'Prompt (not used by this job)' : 'Prompt'}
+                </label>
                 <textarea
                   value={form.prompt}
                   onChange={(event) =>
@@ -344,9 +421,13 @@ export function EditJobDialog({
                       prompt: event.target.value,
                     }))
                   }
-                  placeholder="What should Hermes Agent do?"
-                  required
-                  rows={5}
+                  placeholder={
+                    isScriptJob
+                      ? 'None — this job runs the script above.'
+                      : 'What should Hermes Agent do?'
+                  }
+                  required={!isScriptJob}
+                  rows={isScriptJob ? 2 : 5}
                   className="w-full resize-none rounded-xl border px-3 py-2.5 text-sm focus:outline-none focus:ring-1"
                   style={{
                     background: 'var(--theme-input)',
@@ -527,7 +608,7 @@ export function EditJobDialog({
                   isSubmitting ||
                   !form.name.trim() ||
                   !form.schedule.trim() ||
-                  !form.prompt.trim()
+                  (!isScriptJob && !form.prompt.trim())
                 }
                 className="rounded-xl px-4 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-50"
                 style={{ background: 'var(--theme-accent)' }}

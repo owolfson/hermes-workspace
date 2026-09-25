@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils'
 import {
   createJob,
   deleteJob,
+  describeJobTask,
   fetchJobOutput,
   fetchJobProfiles,
   fetchJobs,
@@ -75,6 +76,12 @@ function getLastRunStatus(job: ClaudeJob): {
     return {
       label: 'Never run',
       color: 'var(--theme-muted)',
+    }
+  }
+  if (job.last_status === 'delivery_failed') {
+    return {
+      label: 'Last run succeeded · delivery failed',
+      color: 'var(--theme-warning)',
     }
   }
   if (job.last_run_success === true) {
@@ -151,7 +158,7 @@ function JobCard({
             </h3>
           </div>
           <p className="mb-2 line-clamp-2 text-xs text-[var(--theme-muted)]">
-            {job.prompt}
+            {describeJobTask(job)}
           </p>
           <div className="mb-2 flex flex-wrap items-center gap-3 text-[10px] text-[var(--theme-muted)]">
             {job.profile && (
@@ -330,6 +337,11 @@ export function JobsScreen() {
       void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
       toast('Job paused')
     },
+    onError: (error) => {
+      toast(error instanceof Error ? error.message : 'Failed to pause job', {
+        type: 'error',
+      })
+    },
   })
   const resumeMutation = useMutation({
     mutationFn: resumeJob,
@@ -337,12 +349,30 @@ export function JobsScreen() {
       void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
       toast('Job resumed')
     },
+    onError: (error) => {
+      toast(error instanceof Error ? error.message : 'Failed to resume job', {
+        type: 'error',
+      })
+    },
   })
   const triggerMutation = useMutation({
     mutationFn: triggerJob,
+    // Run now executes the job inline (the request only returns when the script
+    // finishes: seconds for most, 30s+ for the daily briefing) — say so up front so
+    // the click doesn't look like it did nothing.
+    onMutate: () => {
+      toast('Running job — this can take a while for long scripts.', {
+        duration: 8_000,
+      })
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
       toast('Job triggered')
+    },
+    onError: (error) => {
+      toast(error instanceof Error ? error.message : 'Failed to trigger job', {
+        type: 'error',
+      })
     },
   })
   const deleteMutation = useMutation({
@@ -350,6 +380,11 @@ export function JobsScreen() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
       toast('Job deleted')
+    },
+    onError: (error) => {
+      toast(error instanceof Error ? error.message : 'Failed to delete job', {
+        type: 'error',
+      })
     },
   })
   const createMutation = useMutation({
@@ -398,6 +433,7 @@ export function JobsScreen() {
       (j) =>
         j.name.toLowerCase().includes(q) ||
         j.prompt.toLowerCase().includes(q) ||
+        j.script?.toLowerCase().includes(q) ||
         j.profile?.toLowerCase().includes(q),
     )
   }, [jobsQuery.data, search])

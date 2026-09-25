@@ -12,10 +12,11 @@ import {
 } from '../../server/gateway-capabilities'
 import {
   createProfileCronJob,
+  lastRunSuccess,
   listProfileCronJobs,
 } from '../../server/hermes-cron-profiles'
 import { createCapabilityUnavailablePayload } from '@/lib/feature-gates'
-import { swrCached } from '../../server/swr-cache'
+import { swrBust, swrCached } from '../../server/swr-cache'
 
 function authHeaders(): Record<string, string> {
   return BEARER_TOKEN ? { Authorization: `Bearer ${BEARER_TOKEN}` } : {}
@@ -71,7 +72,17 @@ async function buildAggregateJobs(): Promise<Array<Record<string, unknown>>> {
           ? data
           : ((data as { jobs?: unknown })?.jobs ?? [])
         if (Array.isArray(arr)) {
-          gatewayJobs = arr as Array<Record<string, unknown>>
+          // The dashboard's raw job dicts carry last_status ("ok" / "failed" /
+          // "blocked_config" / ...), not the last_run_success boolean the
+          // ClaudeJob type (and the Jobs tab's status badge) expects — that
+          // mapping only ever ran inside listProfileCronJobs() for the local
+          // (non-dashboard) profile path, which real operator jobs never hit
+          // in a split-container deploy. Without it every job showed "Last
+          // run unknown" regardless of whether it actually succeeded.
+          gatewayJobs = (arr as Array<Record<string, unknown>>).map((job) => ({
+            ...job,
+            last_run_success: lastRunSuccess(job),
+          }))
         }
       }
     }
@@ -156,6 +167,7 @@ export const Route = createFileRoute('/api/claude-jobs')({
         if (profile) {
           try {
             const result = createProfileCronJob(profile, parsedBody)
+            swrBust('claude-jobs')
             return new Response(JSON.stringify(result), {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
@@ -192,6 +204,7 @@ export const Route = createFileRoute('/api/claude-jobs')({
               headers: { 'Content-Type': 'application/json', ...authHeaders() },
               body,
             })
+        if (res.ok) swrBust('claude-jobs')
         return new Response(await res.text(), {
           status: res.status,
           headers: { 'Content-Type': 'application/json' },

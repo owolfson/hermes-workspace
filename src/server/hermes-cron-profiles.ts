@@ -92,20 +92,37 @@ function readDeliverTargets(value: unknown): Array<string> {
   return Array.from(new Set(normalizeDeliver(value)))
 }
 
-function lastRunSuccess(job: RawCronJob): boolean | null {
+export function lastRunSuccess(job: RawCronJob): boolean | null {
   const status = readString(job.last_status, job.lastRunStatus, job.status)
   if (!status) return null
   const normalized = status.toLowerCase()
   if (
-    ['ok', 'success', 'succeeded', 'completed', 'complete', 'done'].includes(
-      normalized,
-    )
+    [
+      'ok',
+      'success',
+      'succeeded',
+      'completed',
+      'complete',
+      'done',
+      // The job RAN; only delivery of its output failed (e.g. deliver: origin,
+      // which can't receive pushes). Not "unknown", and not a failed run.
+      'delivery_failed',
+    ].includes(normalized)
   )
     return true
   if (
-    ['error', 'failed', 'fail', 'failure', 'cancelled', 'canceled'].includes(
-      normalized,
-    )
+    [
+      'error',
+      'failed',
+      'fail',
+      'failure',
+      'cancelled',
+      'canceled',
+      // never executed: e.g. delivery platform not configured
+      'blocked_config',
+      'timeout',
+      'timed_out',
+    ].includes(normalized)
   )
     return false
   return null
@@ -116,7 +133,20 @@ function profileHome(profile: string): string {
   return join(getProfilesDir(), profile)
 }
 
+// In a split-container deploy (workspace + separate hermes-agent/dashboard),
+// getHermesRoot() resolves to the WORKSPACE's own private data dir, not the
+// agent's — the operator's real 'default' profile cron output lives on the
+// agent side instead (its $HERMES_HOME/cron/output/<jobId>/, e.g. /opt/data
+// on hermes-agent). HERMES_AGENT_CRON_OUTPUT_DIR points at that directory's
+// host path when the workspace has filesystem access to it (e.g. via a
+// broad /mnt/user bind mount) so 'default'-profile jobs read their real
+// output instead of an always-empty directory under the workspace's own home.
+const AGENT_CRON_OUTPUT_DIR = process.env.HERMES_AGENT_CRON_OUTPUT_DIR?.trim() || ''
+
 function outputDir(profile: string, jobId: string): string {
+  if (profile === 'default' && AGENT_CRON_OUTPUT_DIR) {
+    return join(AGENT_CRON_OUTPUT_DIR, jobId)
+  }
   return join(profileHome(profile), 'cron', 'output', jobId)
 }
 

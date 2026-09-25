@@ -18,6 +18,8 @@ import {
   runProfileCronAction,
   updateProfileCronJob,
 } from '../../server/hermes-cron-profiles'
+import { readJobScript } from '../../server/job-script'
+import { swrBust } from '../../server/swr-cache'
 
 function authHeaders(): Record<string, string> {
   return BEARER_TOKEN ? { Authorization: `Bearer ${BEARER_TOKEN}` } : {}
@@ -44,10 +46,19 @@ export const Route = createFileRoute('/api/claude-jobs/$jobId')({
         const url = new URL(request.url)
         const action = url.searchParams.get('action') || ''
         const parsed = parseProfileJobId(params.jobId)
-        if (parsed.profile && (action === 'output' || action === 'runs')) {
+        if (action === 'output' || action === 'runs') {
+          // Real per-run output for 'default'-profile jobs lives on disk
+          // (see HERMES_AGENT_CRON_OUTPUT_DIR in hermes-cron-profiles.ts),
+          // not behind a dashboard REST route — hermes-dashboard has no
+          // /api/cron/jobs/<id>/output endpoint at all, and its /runs
+          // endpoint never persists per-run records for no_agent script
+          // jobs (confirmed empty for every job, not job-specific). Try the
+          // local file read FIRST for every job id, profile-prefixed or
+          // not; it safely returns [] if the directory doesn't exist, so
+          // this never regresses jobs that genuinely have no local files.
           const limit = Number(url.searchParams.get('limit') ?? '10')
           const outputs = readProfileCronOutputs(
-            parsed.profile,
+            parsed.profile ?? 'default',
             parsed.jobId,
             Number.isFinite(limit) ? limit : 10,
           )
@@ -62,6 +73,34 @@ export const Route = createFileRoute('/api/claude-jobs/$jobId')({
 
         const capabilities = await ensureGatewayProbed()
         if (!capabilities.jobs) return notSupported()
+
+        if (action === 'script') {
+          // no_agent jobs have an empty prompt — their real content is the
+          // script file they run. The name comes from the job record itself
+          // (never from the request), so this can't be used to read arbitrary
+          // files; content is redacted server-side (see job-script.ts).
+          if (!capabilities.dashboard.available) return notSupported()
+          const jobRes = await dashboardFetch(`/api/cron/jobs/${parsed.jobId}`)
+          if (!jobRes.ok) {
+            return new Response(await jobRes.text(), {
+              status: jobRes.status,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          }
+          const job = (await jobRes.json()) as { script?: unknown }
+          const body = job.script
+            ? (() => {
+                const result = readJobScript(job.script)
+                return result.ok
+                  ? { script: result.script }
+                  : { script: null, reason: result.reason, name: result.name }
+              })()
+            : { script: null, reason: 'no-script' }
+          return new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
 
         if (capabilities.dashboard.available) {
           const dashboardPath = action
@@ -118,6 +157,7 @@ export const Route = createFileRoute('/api/claude-jobs/$jobId')({
               parsed.jobId,
               profileAction as 'pause' | 'resume' | 'run' | 'remove',
             )
+            swrBust('claude-jobs')
             return new Response(JSON.stringify(result), {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
@@ -150,6 +190,7 @@ export const Route = createFileRoute('/api/claude-jobs/$jobId')({
             headers: body ? { 'Content-Type': 'application/json' } : undefined,
             body: body || undefined,
           })
+          if (res.ok) swrBust('claude-jobs')
           return new Response(await res.text(), {
             status: res.status,
             headers: { 'Content-Type': 'application/json' },
@@ -164,6 +205,7 @@ export const Route = createFileRoute('/api/claude-jobs/$jobId')({
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: body || undefined,
         })
+        if (res.ok) swrBust('claude-jobs')
         return new Response(await res.text(), {
           status: res.status,
           headers: { 'Content-Type': 'application/json' },
@@ -225,6 +267,7 @@ export const Route = createFileRoute('/api/claude-jobs/$jobId')({
                 throw removeError
               }
             }
+            swrBust('claude-jobs')
             return new Response(JSON.stringify(result), {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
@@ -253,6 +296,7 @@ export const Route = createFileRoute('/api/claude-jobs/$jobId')({
               headers: { 'Content-Type': 'application/json', ...authHeaders() },
               body,
             })
+        if (res.ok) swrBust('claude-jobs')
         return new Response(await res.text(), {
           status: res.status,
           headers: { 'Content-Type': 'application/json' },
@@ -272,6 +316,7 @@ export const Route = createFileRoute('/api/claude-jobs/$jobId')({
               parsed.jobId,
               'remove',
             )
+            swrBust('claude-jobs')
             return new Response(JSON.stringify(result), {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
@@ -297,6 +342,7 @@ export const Route = createFileRoute('/api/claude-jobs/$jobId')({
               method: 'DELETE',
               headers: authHeaders(),
             })
+        if (res.ok) swrBust('claude-jobs')
         return new Response(await res.text(), {
           status: res.status,
           headers: { 'Content-Type': 'application/json' },

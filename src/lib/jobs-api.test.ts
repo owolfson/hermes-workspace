@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildJobMutationPayload,
   findJobById,
@@ -8,6 +8,7 @@ import {
   isTerminalJobState,
   normalizeJobState,
   normalizeJobsResponse,
+  triggerJob,
 } from './jobs-api'
 import type { HermesJob, JobOutput } from './jobs-api'
 
@@ -101,5 +102,41 @@ describe('job mutation payloads', () => {
       input: 'send the daily sync',
       deliver: 'local,discord',
     })
+  })
+})
+
+describe('triggerJob', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  // Real behavior on hermes-dashboard v0.21.1 (executions.db, 2026-09-25): after a manual
+  // run, a second Run-now for the same schedule slot is refused with HTTP 409
+  // {"detail":"Job is already running or was claimed by another scheduler"} and the audit
+  // row says "Fire claim was not acquired". Nothing is actually running, so the raw text
+  // misleads; the UI should say what really happened and how to force a run.
+  it('explains a 409 truthfully instead of echoing "already running"', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ detail: 'Job is already running or was claimed by another scheduler' }),
+          { status: 409, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    await expect(triggerJob('abc')).rejects.toThrow(/already ran for its current schedule slot/i)
+    await expect(triggerJob('abc')).rejects.toThrow(/pause it first/i)
+  })
+
+  it('still surfaces other errors from the server body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail: 'Job not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    await expect(triggerJob('abc')).rejects.toThrow('Job not found')
   })
 })

@@ -21,6 +21,8 @@ export type ClaudeJob = {
   last_run_at?: string | null
   last_run_success?: boolean | null
   last_run_error?: string | null
+  /** Raw dashboard status: ok | delivery_failed | blocked_config | failed | ... */
+  last_status?: string | null
   error?: string | null
   created_at?: string
   updated_at?: string
@@ -31,9 +33,26 @@ export type ClaudeJob = {
   profile?: string
   profile_name?: string
   jobId?: string
+  /** Script-only (no_agent) jobs run this file instead of a prompt. */
+  script?: string | null
+  no_agent?: boolean
 }
 
 export type HermesJob = ClaudeJob
+
+export type JobScriptInfo = {
+  name: string
+  content: string
+  size: number
+  truncated: boolean
+  redactions: number
+}
+
+export type JobScriptResponse = {
+  script: JobScriptInfo | null
+  reason?: string
+  name?: string
+}
 
 export type JobOutput = {
   filename: string
@@ -294,6 +313,15 @@ export async function triggerJob(jobId: string): Promise<ClaudeJob> {
     method: 'POST',
   })
   if (!res.ok) {
+    if (res.status === 409) {
+      // hermes-dashboard refuses a second manual fire for the same schedule slot
+      // ("Fire claim was not acquired") but words it as "already running or
+      // claimed by another scheduler", which is usually false — nothing is running.
+      throw new Error(
+        'This job already ran for its current schedule slot (or is running right now). ' +
+          'Wait for its next scheduled time, or pause it first and then use Run now to force a run.',
+      )
+    }
     const body = await res.json().catch(() => ({}))
     throw new Error(
       errorMessageFromBody(body, `Failed to trigger job: ${res.status}`),
@@ -322,6 +350,21 @@ export async function fetchJobProfiles(): Promise<Array<JobProfileOption>> {
         )
         .map(({ name, active }) => ({ name, active }))
     : []
+}
+
+export async function fetchJobScript(
+  jobId: string,
+): Promise<JobScriptResponse> {
+  const res = await fetch(`${CLAUDE_API}/${jobId}?action=script`)
+  if (!res.ok) throw new Error(`Failed to fetch script: ${res.status}`)
+  return (await res.json()) as JobScriptResponse
+}
+
+/** What to show where a prompt would go: the prompt, else the script name. */
+export function describeJobTask(job: ClaudeJob): string {
+  if (job.prompt && job.prompt.trim()) return job.prompt
+  if (job.script) return `Runs script: ${job.script}`
+  return ''
 }
 
 export async function fetchJobOutput(
