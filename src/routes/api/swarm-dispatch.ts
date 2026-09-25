@@ -290,6 +290,11 @@ export function readRuntimeCheckpointSnapshot(profilePath: string): RuntimeCheck
   }
 }
 
+/** A runtime checkpoint only counts for an assignment if it was written after that dispatch. */
+export function runtimeCheckpointIsFresh(snapshot: Pick<RuntimeCheckpointSnapshot, 'lastOutputAt'>, dispatchedAtMs: number): boolean {
+  return snapshot.lastOutputAt !== null && snapshot.lastOutputAt >= dispatchedAtMs
+}
+
 export function runtimeCheckpointSignature(snapshot: RuntimeCheckpointSnapshot): string {
   return JSON.stringify(snapshot)
 }
@@ -470,7 +475,7 @@ export function buildWorkerPrompt(input: {
   return lines.filter(Boolean).join('\n')
 }
 
-function markDispatchStarted(workerId: string, task: string, missionId?: string | null, assignmentId?: string | null, notifySessionKey?: string | null): void {
+export function markDispatchStarted(workerId: string, task: string, missionId?: string | null, assignmentId?: string | null, notifySessionKey?: string | null): void {
   const controlMessage = `Dispatched task: ${task.slice(0, 180)}`
   writeRuntimePatch(workerId, {
     state: 'executing',
@@ -479,6 +484,14 @@ function markDispatchStarted(workerId: string, task: string, missionId?: string 
     currentMissionId: missionId ?? null,
     currentAssignmentId: assignmentId ?? null,
     checkpointStatus: 'in_progress',
+    // The previous task's checkpoint must not survive into this one: the poll parses
+    // checkpointRaw first and would report the OLD result as this task's completion
+    // (a mission that "finished" 165ms after it started).
+    checkpointRaw: null,
+    checkpointFilesChanged: null,
+    checkpointCommandsRun: null,
+    lastResult: null,
+    lastOutputAt: null,
     needsHuman: false,
     blockedReason: null,
     lastDispatchAt: Date.now(),

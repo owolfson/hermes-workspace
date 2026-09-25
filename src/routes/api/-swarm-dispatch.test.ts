@@ -11,6 +11,9 @@ import {
   describeOneshotFailure,
   markCheckpointResult,
   markDispatchResult,
+  markDispatchStarted,
+  readRuntimeCheckpointSnapshot,
+  runtimeCheckpointIsFresh,
   dispatchBlockReason,
   runtimeCheckpointSignature,
   runtimeSnapshotIsFresh,
@@ -338,5 +341,47 @@ describe('markDispatchResult', () => {
     expect(runtime.state).toBe('idle')
     expect(runtime.checkpointStatus).toBe('done')
     expect(runtime.lastDispatchMode).toBe('oneshot') // dispatch bookkeeping is still recorded
+  })
+})
+
+describe('a new dispatch must not inherit the previous task\'s completion', () => {
+  let home: string | null = null
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    if (home) rmSync(home, { recursive: true, force: true })
+    home = null
+  })
+  const doneCheckpoint = {
+    stateLabel: 'DONE', runtimeState: 'idle', checkpointStatus: 'done', filesChanged: 'a.txt', commandsRun: 'write_file',
+    result: 'previous task result', blocker: null, nextAction: null,
+    raw: 'STATE: DONE\nFILES_CHANGED: a.txt\nCOMMANDS_RUN: write_file\nRESULT: previous task result\nBLOCKER: none\nNEXT_ACTION: none',
+  } as never
+
+  it('clears the previous checkpoint at dispatch start, so the next poll cannot read it as done', () => {
+    // Regression: once worker runtime correctly ended as "done" with its checkpointRaw saved,
+    // the NEXT mission's first poll parsed that stale raw and completed in 165ms with the old result.
+    home = mkdtempSync(join(tmpdir(), 'swarm-runtime-'))
+    vi.stubEnv('HERMES_HOME', home)
+    const profile = join(home, 'profiles', 'builder')
+    mkdirSync(profile, { recursive: true })
+    writeFileSync(join(profile, 'runtime.json'), '{}')
+    markCheckpointResult('builder', doneCheckpoint)
+    expect(checkpointFromRuntimeSnapshot(readRuntimeCheckpointSnapshot(profile))?.stateLabel).toBe('DONE') // the stale state exists
+
+    markDispatchStarted('builder', 'a brand new task', 'mission-2', 'assign-2')
+
+    const snapshot = readRuntimeCheckpointSnapshot(profile)
+    expect(snapshot.checkpointRaw).toBeNull()
+    const cp = checkpointFromRuntimeSnapshot(snapshot)
+    expect(cp === null || cp.stateLabel === 'IN_PROGRESS').toBe(true)
+  })
+
+  it('only trusts a runtime checkpoint written after this assignment was dispatched', () => {
+    const dispatchedAt = 1_790_344_133_897
+    const snap = (lastOutputAt: number | null) => ({ lastOutputAt }) as never
+    expect(runtimeCheckpointIsFresh(snap(dispatchedAt - 86_400_000), dispatchedAt)).toBe(false) // yesterday's
+    expect(runtimeCheckpointIsFresh(snap(null), dispatchedAt)).toBe(false) // cannot prove fresh
+    expect(runtimeCheckpointIsFresh(snap(dispatchedAt + 5_000), dispatchedAt)).toBe(true)
+    expect(runtimeCheckpointIsFresh(snap(dispatchedAt), dispatchedAt)).toBe(true)
   })
 })

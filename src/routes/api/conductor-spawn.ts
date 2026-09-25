@@ -11,7 +11,7 @@ import { getSwarmMission, recordMissionCheckpoint  } from '../../server/swarm-mi
 import { getSwarmProfilePath } from '../../server/swarm-foundation'
 import { readWorkerMessages } from '../../server/swarm-chat-reader'
 import { newestCheckpointFromMessages } from '../../server/swarm-checkpoints'
-import { checkpointFromRuntimeSnapshot, dispatchSwarmAssignments, markCheckpointResult, readRuntimeCheckpointSnapshot, runtimeCheckpointSignature } from './swarm-dispatch'
+import { checkpointFromRuntimeSnapshot, dispatchSwarmAssignments, markCheckpointResult, runtimeCheckpointIsFresh, readRuntimeCheckpointSnapshot, runtimeCheckpointSignature } from './swarm-dispatch'
 import type { SwarmMission } from '../../server/swarm-missions'
 
 let cachedSkill: string | null = null
@@ -355,7 +355,10 @@ export const Route = createFileRoute('/api/conductor-spawn')({
                   const profilePath = getSwarmProfilePath(assignment.workerId)
                   // Check runtime.json first
                   const snapshot = readRuntimeCheckpointSnapshot(profilePath)
-                  let checkpoint = checkpointFromRuntimeSnapshot(snapshot)
+                  // A leftover terminal state from the worker's PREVIOUS task is not this task's result.
+                  let checkpoint = runtimeCheckpointIsFresh(snapshot, assignment.dispatchedAt ?? 0)
+                    ? checkpointFromRuntimeSnapshot(snapshot)
+                    : null
 
                   // Also check the worker's chat SQLite DB for checkpoint messages
                   // (tmux workers write checkpoints there)
