@@ -26,6 +26,7 @@ import {
   type DashboardFetcher,
   type DashboardOverview,
 } from '../../../server/dashboard-aggregator'
+import { effectiveResolvedAt } from '../../../server/overview-cache-policy'
 
 const overviewFetcher: DashboardFetcher = (path) => dashboardFetch(path)
 // Gateway fetcher hits the gateway URL (8645/8642), which is where
@@ -64,6 +65,9 @@ const overviewCache = new Map<string, OverviewCacheEntry>()
 // slows every other endpoint it serves (skills, cron) while it runs. Client
 // polls every 30s and gets the cached copy instantly either way.
 const OVERVIEW_TTL_MS = 600_000
+// A degraded build (a core section failed, e.g. cold-start timeouts) must not stick
+// for the full TTL — see overview-cache-policy.ts.
+const DEGRADED_OVERVIEW_TTL_MS = 30_000
 
 export const Route = createFileRoute('/api/dashboard/overview')({
   server: {
@@ -110,7 +114,12 @@ export const Route = createFileRoute('/api/dashboard/overview')({
             overviewCache.set(cacheKey, next)
             promise.then(
               (result) => {
-                next.resolvedAt = Date.now()
+                next.resolvedAt = effectiveResolvedAt(
+                  result,
+                  Date.now(),
+                  OVERVIEW_TTL_MS,
+                  DEGRADED_OVERVIEW_TTL_MS,
+                )
                 next.lastGood = result
               },
               () => {

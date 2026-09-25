@@ -111,8 +111,17 @@ export function McpServerCard({ server, onEdit }: Props) {
           size="sm"
           disabled={test.isPending}
           onClick={async () => {
-            const result = await test.mutateAsync({ name: server.name })
-            setTestResult(result)
+            try {
+              const result = await test.mutateAsync({ name: server.name })
+              setTestResult(result)
+            } catch (err) {
+              setTestResult({
+                ok: false,
+                status: 'failed',
+                discoveredTools: [],
+                error: err instanceof Error ? err.message : 'Test request failed',
+              })
+            }
             qc.invalidateQueries({ queryKey: ['mcp', 'servers'] })
           }}
         >

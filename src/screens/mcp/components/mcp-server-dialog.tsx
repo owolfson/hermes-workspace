@@ -252,8 +252,9 @@ export function McpServerDialog({ open, initial, onClose }: Props) {
 
                 {fallbackMode ? (
                   <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
-                    ⚠ Local fallback mode — config-only CRUD. Live tool
-                    Discover and connectivity Test require the hermes-agent
+                    ⚠ Local fallback mode — config-only CRUD. Save the server,
+                    then use Test on its card for a real connection check and
+                    tool list; Discover on unsaved input needs the hermes-agent
                     /api/mcp runtime endpoint.
                   </p>
                 ) : null}

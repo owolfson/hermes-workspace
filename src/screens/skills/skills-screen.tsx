@@ -492,12 +492,23 @@ export function SkillsScreen() {
     action: 'install' | 'uninstall' | 'toggle',
     payload: {
       skillId: string
+      // Installed skill name. Marketplace cards use the hub IDENTIFIER as skillId
+      // (needed to install), but uninstall must target the installed NAME.
+      name?: string
       enabled?: boolean
       source?: HubSkill['source']
     },
   ) {
     setActionError(null)
     setActionSkillId(payload.skillId)
+    if (action === 'install') {
+      // The install runs a security scan, downloads the skill and scans it again
+      // (1-3 minutes). Without a notice the greyed-out button looks like nothing
+      // happened.
+      toast('Installing — the security scan and download can take a few minutes.', {
+        duration: 10_000,
+      })
+    }
 
     // Install/uninstall on a non-active profile would silently target the
     // dashboard's bound profile (the only one the legacy /api/skills routes
@@ -535,7 +546,7 @@ export function SkillsScreen() {
             : {
                 action,
                 skillId: payload.skillId,
-                name: payload.skillId,
+                name: payload.name ?? payload.skillId,
                 identifier: payload.skillId,
                 enabled: payload.enabled,
                 source: payload.source,
@@ -826,9 +837,15 @@ export function SkillsScreen() {
                     source: skill?.source,
                   })
                 }}
-                onUninstall={(skillId) =>
-                  runSkillAction('uninstall', { skillId })
-                }
+                onUninstall={(skillId) => {
+                  const skill = hubQuery.data?.results.find(
+                    (entry) => entry.id === skillId,
+                  )
+                  runSkillAction('uninstall', {
+                    skillId,
+                    name: skill?.name,
+                  })
+                }}
                 onToggle={(skillId, enabled) =>
                   runSkillAction('toggle', { skillId, enabled })
                 }
@@ -982,6 +999,7 @@ export function SkillsScreen() {
                       onClick={() => {
                         runSkillAction('uninstall', {
                           skillId: selectedSkill.id,
+                          name: selectedSkill.name,
                         })
                       }}
                     >

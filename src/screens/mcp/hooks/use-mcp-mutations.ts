@@ -23,7 +23,24 @@ async function postJson<T>(path: string, body: unknown, method: 'POST' | 'PUT' |
 
 export function useTestMcpServer() {
   return useMutation<McpTestResult, Error, { name: string } | McpClientInput>({
-    mutationFn: (payload) => postJson<McpTestResult>('/api/mcp/test', payload),
+    // A failed probe (ok:false, status:'failed', error:'...') is a valid RESULT to
+    // show on the card, not an exception — postJson would have thrown on it, which
+    // skipped the list refresh and surfaced as an uncaught error. Only responses
+    // with no result shape at all (auth failure, gateway error) still throw.
+    mutationFn: async (payload) => {
+      const res = await fetch('/api/mcp/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const json = (await res.json().catch(() => null)) as
+        | (Partial<McpTestResult> & { error?: string })
+        | null
+      if (json && typeof json === 'object' && typeof json.status === 'string') {
+        return json as McpTestResult
+      }
+      throw new Error(json?.error || `Request failed (${res.status})`)
+    },
   })
 }
 

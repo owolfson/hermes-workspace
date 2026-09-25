@@ -5,21 +5,14 @@ import { promisify } from 'node:util'
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { isAuthenticated } from '../../../server/auth-middleware'
+import {
+  dashboardFetch,
+  ensureGatewayProbed,
+} from '../../../server/gateway-capabilities'
+import { mapHubSearchResults } from '../../../server/skills-upstream'
+import type { SkillSearchResult } from '../../../server/skills-upstream'
 
 const execFileAsync = promisify(execFile)
-
-type SkillSearchResult = {
-  id: string
-  name: string
-  description: string
-  author: string
-  category: string
-  tags: Array<string>
-  source: string
-  trust: string
-  installCommand: string
-  installed: boolean
-}
 
 type SkillSearchPayload = {
   ok?: boolean
@@ -133,6 +126,53 @@ async function searchBundledSkills(
   }
 }
 
+/**
+ * Real hub search via the dashboard (GET /api/skills/hub/search, skills.sh index).
+ * This used to shell out to a python script that isn't in the image and then fall
+ * back to the fork's own bundled skills dir, so hub search always returned 0
+ * results. Returns null on any failure so the old chain still runs as fallback.
+ */
+async function searchDashboardHub(
+  query: string,
+  limit: number,
+  source: string,
+): Promise<SkillSearchPayload | null> {
+  try {
+    const capabilities = await ensureGatewayProbed()
+    if (!capabilities.dashboard.available) return null
+    const qs = new URLSearchParams({ q: query, limit: String(limit) })
+    if (source && source !== 'all') qs.set('source', source)
+    const [hubRes, installedRes] = await Promise.all([
+      dashboardFetch(`/api/skills/hub/search?${qs}`, {
+        signal: AbortSignal.timeout(30_000),
+      }),
+      dashboardFetch('/api/skills', {
+        signal: AbortSignal.timeout(15_000),
+      }).catch(() => null),
+    ])
+    if (!hubRes.ok) return null
+    const installed = new Set<string>()
+    if (installedRes?.ok) {
+      const list = (await installedRes.json().catch(() => [])) as unknown
+      if (Array.isArray(list)) {
+        for (const row of list) {
+          const name = (row as { name?: unknown } | null)?.name
+          if (typeof name === 'string') installed.add(name)
+        }
+      }
+    }
+    const results = mapHubSearchResults(await hubRes.json(), installed)
+    return {
+      ok: true,
+      results,
+      source: 'dashboard-skills-hub',
+      total: results.length,
+    }
+  } catch {
+    return null
+  }
+}
+
 async function searchPythonSkillsHub(
   query: string,
   limit: number,
@@ -172,6 +212,9 @@ export const Route = createFileRoute('/api/skills/hub-search')({
           if (!query) {
             return json({ results: [], source: 'idle' })
           }
+
+          const viaDashboard = await searchDashboardHub(query, limit, source)
+          if (viaDashboard) return json(viaDashboard)
 
           try {
             return json(await searchPythonSkillsHub(query, limit, source))

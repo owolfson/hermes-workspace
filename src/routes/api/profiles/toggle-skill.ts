@@ -63,8 +63,10 @@ export const Route = createFileRoute('/api/profiles/toggle-skill')({
             )
           }
 
+          // v0.21.1 dashboards have no /api/profiles/<name>/skills/toggle; the
+          // per-profile toggle is PUT /api/skills/toggle?profile=<name>.
           const response = await dashboardFetch(
-            `/api/profiles/${encodeURIComponent(profile)}/skills/toggle`,
+            `/api/skills/toggle?profile=${encodeURIComponent(profile)}`,
             {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },

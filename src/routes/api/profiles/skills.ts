@@ -2,7 +2,9 @@
  * Proxy for the dashboard's per-profile skills endpoint.
  *
  *   GET /api/profiles/skills?name=<profile>
- *     → dashboard GET /api/profiles/<profile>/skills
+ *     → dashboard GET /api/skills?profile=<profile>
+ *   (v0.21.1 dashboards have no /api/profiles/<profile>/skills route; that
+ *   path 404s. Fixed 2026-09-24 after an audit found it dead.)
  *
  * Pairs with NousResearch/hermes-agent#25116, which lets one dashboard
  * daemon edit `skills.disabled` across every installed profile. Without
@@ -24,6 +26,7 @@ import {
   ensureGatewayProbed,
 } from '../../../server/gateway-capabilities'
 import { createCapabilityUnavailablePayload } from '@/lib/feature-gates'
+import { toProfileSkillsPayload } from '../../../server/skills-upstream'
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 
@@ -55,14 +58,15 @@ export const Route = createFileRoute('/api/profiles/skills')({
             )
           }
 
+          // hermes-dashboard v0.21.1 has no /api/profiles/<name>/skills (that route
+          // came from an upstream PR this dashboard predates); per-profile skills
+          // are GET /api/skills?profile=<name>, a bare list the UI wants as {items}.
           const response = await dashboardFetch(
-            `/api/profiles/${encodeURIComponent(profile)}/skills`,
+            `/api/skills?profile=${encodeURIComponent(profile)}`,
             { signal: AbortSignal.timeout(30_000) },
           )
           const body = await response.text()
           if (!response.ok) {
-            // 404 from dashboard means the profile doesn't exist or doesn't
-            // expose the endpoint (older dashboard without PR #25116).
             return json(
               {
                 error:
@@ -82,8 +86,7 @@ export const Route = createFileRoute('/api/profiles/skills')({
               { status: 502 },
             )
           }
-          const items = Array.isArray(parsed) ? parsed : []
-          return json({ profile, items })
+          return json({ profile, ...toProfileSkillsPayload(parsed) })
         } catch (err) {
           return json(
             { error: err instanceof Error ? err.message : String(err) },

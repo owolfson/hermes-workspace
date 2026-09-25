@@ -12,6 +12,7 @@ import {
 import { requireJsonContentType, safeErrorMessage } from '../../../server/rate-limit'
 import { normalizeTestResult } from '../../../server/mcp-normalize'
 import { runHermesMcpTest } from '../../../server/mcp-cli-bridge'
+import { mapDashboardMcpTest } from '../../../server/mcp-dashboard'
 import { setProbe } from '../../../server/mcp-tools-cache'
 import { parseMcpServerInput } from '../../../server/mcp-input-validate'
 import { createCapabilityUnavailablePayload } from '@/lib/feature-gates'
@@ -58,7 +59,28 @@ export const Route = createFileRoute('/api/mcp/test')({
                   'Local fallback only supports testing existing servers by name.',
               })
             }
-            const result = await runHermesMcpTest(name, { timeoutMs: TEST_TIMEOUT_MS })
+            // Prefer the dashboard's probe: it runs against the AGENT's real MCP
+            // config and returns the real tool list. The bundled CLI below has
+            // its own HERMES_HOME so it can't see the agent's servers (it always
+            // answered status "unknown", 0 tools). Falls back to the CLI only if
+            // the dashboard call itself can't be made.
+            let result: Awaited<ReturnType<typeof runHermesMcpTest>> | null = null
+            if (capabilities.dashboard.available) {
+              try {
+                const started = Date.now()
+                const res = await dashboardFetch(
+                  `/api/mcp/servers/${encodeURIComponent(name)}/test`,
+                  { method: 'POST', signal: AbortSignal.timeout(TEST_TIMEOUT_MS) },
+                )
+                const payload = (await res.json().catch(() => null)) as unknown
+                result = mapDashboardMcpTest(res.status, payload, Date.now() - started)
+              } catch {
+                result = null
+              }
+            }
+            if (!result) {
+              result = await runHermesMcpTest(name, { timeoutMs: TEST_TIMEOUT_MS })
+            }
             setProbe(name, {
               status: result.status,
               toolCount: result.discoveredTools.length,

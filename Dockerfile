@@ -68,6 +68,9 @@ COPY --from=build --chown=workspace:workspace /app/node_modules ./node_modules
 COPY --from=build --chown=workspace:workspace /app/package.json ./package.json
 COPY --from=build --chown=workspace:workspace /app/server-entry.js ./server-entry.js
 COPY --from=build --chown=workspace:workspace /app/skills ./skills
+# mcp-presets.seed.json is read at runtime from ./assets (mcp-presets-store.ts); without
+# this the MCP preset gallery is empty ("seed asset missing").
+COPY --from=build --chown=workspace:workspace /app/assets ./assets
 COPY --chown=workspace:workspace docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production \
