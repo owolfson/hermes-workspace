@@ -266,6 +266,99 @@ let dashboardTokenCache = ''
 export const BEARER_TOKEN = process.env.HERMES_API_TOKEN || process.env.CLAUDE_API_TOKEN || ''
 
 /**
+ * 2026-09-10 — the dashboard's June-2026 auth hardening made ANY non-loopback
+ * bind always require a real authenticated session (see should_require_auth /
+ * should_require_dashboard_auth in hermes_cli/web_server.py). Cookie-gated
+ * routes like /api/sessions reject a bearer token outright ({"reason":"no_cookie"})
+ * even when it's the real API_SERVER_KEY — they were never bearer-authable, the
+ * old anonymous-HTML-token-scrape below just never got exercised against them
+ * while --insecure still worked. This performs a REAL username/password login
+ * (same POST a browser's login form makes) and caches the resulting session
+ * cookie for server-side calls. Requires HERMES_DASHBOARD_PASSWORD to be set;
+ * degrades to no cookie (existing 401 behavior) if it isn't.
+ */
+let dashboardSessionCookiePromise: Promise<string> | null = null
+let dashboardSessionCookieCache = ''
+// Cooldown after a FAILED login attempt (not a success) — without this, any
+// background capability-probing that touches a protected dashboard route
+// re-attempts on every single call while the cache is empty, which refills
+// the dashboard's own login rate limiter (429) before it ever gets a clean
+// window to succeed. Measured directly against the live dashboard
+// (2026-09-12): the real budget is ~6 login attempts before 429, not the
+// 10-per-60s this cooldown was originally tuned against — and it does NOT
+// visibly refill within seconds of going quiet. A 20s cooldown lets one bad
+// probeGateway() cycle (every PROBE_TTL_MS=120s) burn through that entire
+// budget in under 2 minutes and then stay locked out indefinitely, since
+// each subsequent cycle's one retry lands in the same still-exhausted
+// window. 5 minutes keeps failed retries far enough apart that the
+// dashboard's bucket has real time to drain between attempts.
+let dashboardSessionLoginFailedAt = 0
+const DASHBOARD_LOGIN_FAILURE_COOLDOWN_MS = 5 * 60_000
+const DASHBOARD_LOGIN_USERNAME = process.env.HERMES_DASHBOARD_USERNAME || 'Owen'
+const DASHBOARD_LOGIN_PASSWORD = process.env.HERMES_DASHBOARD_PASSWORD || ''
+
+export async function fetchDashboardSessionCookie(options?: {
+  force?: boolean
+}): Promise<string> {
+  const force = options?.force === true
+  if (!force && dashboardSessionCookieCache) return dashboardSessionCookieCache
+  if (!DASHBOARD_LOGIN_PASSWORD) return ''
+  if (Date.now() - dashboardSessionLoginFailedAt < DASHBOARD_LOGIN_FAILURE_COOLDOWN_MS) return ''
+  // Coalesce onto an in-flight attempt REGARDLESS of force. gateway-capabilities'
+  // probe checks several dashboard endpoints concurrently (sessions, skills, memory,
+  // config, jobs, mcp, conductor, kanban); when several 401 around the same moment,
+  // each independently retries with force=true. force is only meant to bypass a
+  // STALE cache, not to bypass dedup too — without this, N concurrent force=true
+  // retries each fire their own login request, an N-wide burst that alone can
+  // exhaust the dashboard's 10-per-60s login rate limit in one round trip.
+  if (dashboardSessionCookiePromise) return dashboardSessionCookiePromise
+
+  dashboardSessionCookiePromise = (async () => {
+    try {
+      const res = await fetch(`${CLAUDE_DASHBOARD_URL}/auth/password-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'basic',
+          username: DASHBOARD_LOGIN_USERNAME,
+          password: DASHBOARD_LOGIN_PASSWORD,
+        }),
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      })
+      if (!res.ok) {
+        console.warn(`[gateway] Dashboard password login failed: ${res.status}`)
+        dashboardSessionLoginFailedAt = Date.now()
+        return ''
+      }
+      const setCookies = res.headers.getSetCookie()
+      const cookieHeader = setCookies
+        .map((c) => c.split(';')[0])
+        .filter(Boolean)
+        .join('; ')
+      if (!cookieHeader) {
+        console.warn('[gateway] Dashboard password login returned no session cookie')
+        dashboardSessionLoginFailedAt = Date.now()
+        return ''
+      }
+      dashboardSessionCookieCache = cookieHeader
+      return cookieHeader
+    } catch (err) {
+      console.warn(
+        `[gateway] Dashboard password login request failed: ${err instanceof Error ? err.message : err}`,
+      )
+      dashboardSessionLoginFailedAt = Date.now()
+      return ''
+    }
+  })()
+
+  try {
+    return await dashboardSessionCookiePromise
+  } finally {
+    dashboardSessionCookiePromise = null
+  }
+}
+
+/**
  * Dashboard API auth uses the ephemeral session token injected into the
  * dashboard root HTML at startup. Do not reuse gateway bearer tokens here and
  * do not trust a manually copied dashboard token env var — it goes stale every
@@ -286,10 +379,16 @@ export async function fetchDashboardToken(options?: {
   const force = options?.force === true
 
   if (!force && dashboardTokenCache) return dashboardTokenCache
-  if (BEARER_TOKEN) {
-    dashboardTokenCache = BEARER_TOKEN
-    return BEARER_TOKEN
-  }
+  // BEARER_TOKEN (HERMES_API_TOKEN/CLAUDE_API_TOKEN) authenticates the
+  // GATEWAY (hermes-agent:8642) — it is meaningless to the DASHBOARD
+  // (hermes-dashboard:9119), a separate service with its own session-cookie
+  // auth (see fetchDashboardSessionCookie). A prior version of this function
+  // returned it here anyway, so every dashboard-protected request carried an
+  // Authorization header the dashboard couldn't validate — and the dashboard
+  // rejected the whole request on that alone, before ever checking the
+  // (valid) session cookie sitting right next to it. That silently broke
+  // every dashboard-backed feature (session list, skills, jobs, config)
+  // whenever HERMES_API_TOKEN was set, with no visible error pointing here.
   if (!force && dashboardTokenPromise) return dashboardTokenPromise
 
   dashboardTokenPromise = (async () => {
@@ -354,7 +453,21 @@ function withDashboardBase(path: string): string {
 export async function dashboardFetch(
   path: string,
   init: RequestInit = {},
+  options?: { retryOn401?: boolean },
 ): Promise<Response> {
+  // Some callers (probeConductor, probeKanban) treat 401 as a normal,
+  // expected response — "the route exists, auth just isn't accepted yet" —
+  // not as evidence the session died. Those callers pass retryOn401:false.
+  // Without this, EVERY such probe forced a brand-new password-login on its
+  // own 401 (clearing the cache for every other concurrent caller too), even
+  // though the cached cookie was still perfectly valid for the endpoints
+  // that actually needed it (e.g. /api/sessions). probeGateway() runs these
+  // probes on every ~2min cycle, so this alone was burning 2-3 real login
+  // attempts per cycle against a rate limiter with a real budget of only
+  // ~6 attempts (measured directly against the dashboard, 2026-09-12) —
+  // chronically starving the session cookie the sessions list actually
+  // depends on. See also DASHBOARD_LOGIN_FAILURE_COOLDOWN_MS above.
+  const retryOn401 = options?.retryOn401 !== false
   const requestPath = withDashboardBase(path)
   const method = (init.method || 'GET').toUpperCase()
   const doFetch = async (forceToken = false) => {
@@ -375,6 +488,10 @@ export async function dashboardFetch(
         headers.set(key, value)
       }
     }
+    if (isProtected && !headers.has('Cookie')) {
+      const cookie = await fetchDashboardSessionCookie({ force: forceToken })
+      if (cookie) headers.set('Cookie', cookie)
+    }
 
     return fetch(requestPath, {
       ...init,
@@ -384,8 +501,9 @@ export async function dashboardFetch(
   }
 
   let res = await doFetch(false)
-  if (res.status === 401) {
+  if (retryOn401 && res.status === 401) {
     dashboardTokenCache = ''
+    dashboardSessionCookieCache = ''
     res = await doFetch(true)
   }
   return res
@@ -528,9 +646,11 @@ async function probeMcp(): Promise<boolean> {
   // workspace routes use at runtime — otherwise an auth-protected dashboard
   // /api/mcp would falsely report capability=false (Codex MAJOR finding).
   try {
-    const res = await dashboardFetch('/api/mcp', {
-      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-    })
+    const res = await dashboardFetch(
+      '/api/mcp',
+      { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) },
+      { retryOn401: false },
+    )
     if (await validate(res)) return true
   } catch {
     // fall through to gateway path
@@ -637,10 +757,11 @@ async function probeDashboard(): Promise<{ available: boolean; url: string }> {
 async function probeConductor(dashboardAvailable: boolean): Promise<boolean> {
   if (!dashboardAvailable) return false
   try {
-    const res = await dashboardFetch('/api/conductor/missions', {
-      method: 'GET',
-      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-    })
+    const res = await dashboardFetch(
+      '/api/conductor/missions',
+      { method: 'GET', signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) },
+      { retryOn401: false },
+    )
     if (res.status === 404 || res.status === 405) return false
     // 401 means the path exists but the auth token isn't accepted yet —
     // treat as available so token-gated setups don't hide the feature.
@@ -668,10 +789,11 @@ async function probeConductor(dashboardAvailable: boolean): Promise<boolean> {
 async function probeKanban(dashboardAvailable: boolean): Promise<boolean> {
   if (!dashboardAvailable) return false
   try {
-    const res = await dashboardFetch('/api/plugins/kanban/board', {
-      method: 'GET',
-      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-    })
+    const res = await dashboardFetch(
+      '/api/plugins/kanban/board',
+      { method: 'GET', signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) },
+      { retryOn401: false },
+    )
     if (res.status === 404 || res.status === 405) return false
     // The plugin route is unauthenticated by design (loopback-only), so
     // 200 is the normal success. Some auth setups may return 401 — still

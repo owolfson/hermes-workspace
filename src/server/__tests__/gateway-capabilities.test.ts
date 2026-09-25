@@ -201,6 +201,21 @@ describe('gateway-capabilities', () => {
       expect(fetchMock.mock.calls.some(([url]) => url === 'http://127.0.0.1:9119/')).toBe(true)
     })
 
+    it('does not reuse the gateway API bearer token (HERMES_API_TOKEN) for the dashboard — that token is only valid against hermes-agent:8642, and sending it to the dashboard causes the dashboard to reject the request before it ever checks the (valid) session cookie', async () => {
+      process.env.HERMES_API_TOKEN = 'gateway-api-token-not-for-dashboard'
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () => '<html><head><script>window.__HERMES_SESSION_TOKEN__="live-token";</script></head></html>',
+      })
+
+      const mod = await loadMod()
+      await expect(mod.fetchDashboardToken()).resolves.not.toBe(
+        'gateway-api-token-not-for-dashboard',
+      )
+      expect(fetchMock.mock.calls.some(([url]) => url === 'http://127.0.0.1:9119/')).toBe(true)
+    })
+
     it('returns an empty token instead of throwing when dashboard root fails', async () => {
       fetchMock.mockResolvedValue({
         ok: false,
