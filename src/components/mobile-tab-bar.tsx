@@ -1,3 +1,4 @@
+import { isHermesWorldEnabled, withoutHermesWorld } from '@/lib/hermesworld-flag'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { HugeiconsIcon } from '@hugeicons/react'
 import {
@@ -45,7 +46,9 @@ type TabItem = {
   match: (path: string) => boolean
 }
 
-export const MOBILE_NAV_TABS: Array<TabItem> = [
+const HERMESWORLD_ENABLED = isHermesWorldEnabled((import.meta as any).env?.VITE_HERMESWORLD_ENABLED)
+
+const ALL_MOBILE_NAV_TABS: Array<TabItem> = [
   {
     id: 'dashboard',
     label: 'Home',
@@ -132,6 +135,10 @@ export const MOBILE_NAV_TABS: Array<TabItem> = [
     match: (p) => p.startsWith('/settings'),
   },
 ]
+
+// VITE_HERMESWORLD_ENABLED=0 turns HermesWorld off (the desktop sidebar already honored it).
+export const MOBILE_NAV_TABS: Array<TabItem> = withoutHermesWorld(ALL_MOBILE_NAV_TABS, HERMESWORLD_ENABLED)
+
 
 export function MobileTabBar() {
   const navigate = useNavigate()

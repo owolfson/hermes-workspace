@@ -1,3 +1,4 @@
+import { isHermesWorldEnabled, withoutHermesWorld } from '@/lib/hermesworld-flag'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { HugeiconsIcon } from '@hugeicons/react'
 import {
@@ -28,7 +29,9 @@ import {
 } from '@/hooks/use-chat-settings'
 import { useSettingsStore } from '@/hooks/use-settings'
 
-export const MOBILE_HAMBURGER_NAV_ITEMS = [
+const HERMESWORLD_ENABLED = isHermesWorldEnabled((import.meta as any).env?.VITE_HERMESWORLD_ENABLED)
+
+const ALL_MOBILE_HAMBURGER_NAV_ITEMS = [
   {
     id: 'chat',
     label: 'Chat',
@@ -122,6 +125,10 @@ export const MOBILE_HAMBURGER_NAV_ITEMS = [
     match: (p: string) => p.startsWith('/profiles'),
   },
 ]
+
+// VITE_HERMESWORLD_ENABLED=0 turns HermesWorld off (the desktop sidebar already honored it).
+export const MOBILE_HAMBURGER_NAV_ITEMS = withoutHermesWorld(ALL_MOBILE_HAMBURGER_NAV_ITEMS, HERMESWORLD_ENABLED)
+
 
 /** Shared drawer state — used by both the trigger button and the drawer itself */
 let _setOpen: ((v: boolean) => void) | null = null

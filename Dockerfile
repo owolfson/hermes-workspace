@@ -23,6 +23,11 @@ RUN pnpm install --frozen-lockfile
 
 # Copy sources and build
 COPY . .
+# HermesWorld is switched off in this deployment (compose: "Kill the HermesWorld game iframe in the
+# sidebar"), but Vite inlines VITE_* at BUILD time, so the runtime env var in compose never hid it.
+# Default it off here; build with --build-arg VITE_HERMESWORLD_ENABLED=1 to get it back.
+ARG VITE_HERMESWORLD_ENABLED=0
+ENV VITE_HERMESWORLD_ENABLED=$VITE_HERMESWORLD_ENABLED
 RUN pnpm build
 
 # ─── hermes CLI stage (Conductor/Swarm native workers) ───────────────────
