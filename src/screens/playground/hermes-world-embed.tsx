@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { WaveChatPanelsShowcase } from './components/wave-chat-panels-showcase'
+import { probeReachable } from './hermes-world-reachability'
 
 // v1 web client (WebGL build, char-select + world entry verified). Sets
 // COEP require-corp + COOP same-origin for WebGL threading, but has NO
@@ -21,6 +22,20 @@ export function HermesWorldEmbed() {
     return url.toString()
   }, [])
 
+  // Check the host is reachable BEFORE mounting the iframe (see hermes-world-reachability.ts):
+  // a down host otherwise shows Chrome's error page inside the frame, with no fallback.
+  const [reachable, setReachable] = useState<'checking' | 'up' | 'down'>('checking')
+  useEffect(() => {
+    let cancelled = false
+    void probeReachable(webUrl).then((up) => {
+      if (!cancelled) setReachable(up ? 'up' : 'down')
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [webUrl])
+  const showFallback = failed || reachable === 'down'
+
   if (showPanelShowcase) {
     return <WaveChatPanelsShowcase />
   }
@@ -28,7 +43,7 @@ export function HermesWorldEmbed() {
   return (
     <main className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#050015] text-white">
       {/* Embedded HermesWorld v1 web client */}
-      {!failed && (
+      {!showFallback && reachable === 'up' && (
         <iframe
           title="HermesWorld"
           src={webUrl}
@@ -41,7 +56,7 @@ export function HermesWorldEmbed() {
       )}
 
       {/* Loading veil over the iframe until first load */}
-      {!loaded && !failed && (
+      {!showFallback && (reachable === 'checking' || !loaded) && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[radial-gradient(circle_at_50%_35%,rgba(168,85,247,.24),transparent_48%),#050015]">
           <div className="flex flex-col items-center gap-3">
             <img
@@ -57,7 +72,7 @@ export function HermesWorldEmbed() {
       )}
 
       {/* Fallback if the embed cannot load */}
-      {failed && (
+      {showFallback && (
         <div className="relative flex h-full items-center justify-center px-4">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_35%,rgba(168,85,247,.24),transparent_48%),#050015]" />
           <div className="relative max-w-xl rounded-3xl border border-white/12 bg-black/45 px-6 py-6 text-center shadow-2xl backdrop-blur-xl">
@@ -68,8 +83,8 @@ export function HermesWorldEmbed() {
               Open HermesWorld in a full tab
             </h1>
             <p className="mt-3 text-sm leading-relaxed text-white/65">
-              The embedded client couldn’t load here. Open the full web build in
-              a new tab to play.
+              The embedded client couldn’t load here. The HermesWorld server may be
+              unreachable right now; try the full web build in a new tab.
             </p>
             <div className="mt-5 flex flex-wrap justify-center gap-2">
               <a
@@ -94,7 +109,7 @@ export function HermesWorldEmbed() {
       )}
 
       {/* Persistent "open full tab" affordance while embedded */}
-      {!failed && (
+      {!showFallback && (
         <a
           href={webUrl}
           target="_blank"
