@@ -393,3 +393,63 @@
   box-shadow: 0 0 6px rgba(0, 151, 167, 0.2) !important;
   text-shadow: none !important;
 }
+
+/* ── SciFi: HUD readout type ──────────────────────────────────────────
+   The app already has a site-wide "eyebrow label" convention — small
+   uppercase text with wide tracking (section headers, badges, timestamps,
+   tool-call labels — 48 files). In SciFi, swap that label type to mono
+   so it reads as instrument-panel readout text, not just a smaller heading.
+   Body/chat text is untouched. */
+[data-theme='scifi'] .uppercase.tracking-wide,
+[data-theme='scifi'] .uppercase.tracking-wider,
+[data-theme='scifi'] .uppercase.tracking-widest,
+[data-theme='scifi-light'] .uppercase.tracking-wide,
+[data-theme='scifi-light'] .uppercase.tracking-wider,
+[data-theme='scifi-light'] .uppercase.tracking-widest {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, 'Liberation Mono', monospace;
+}
+
+/* ── SciFi: composer HUD frame ──────────────────────────────────────
+   The prompt composer (.composer-shell, src/components/prompt-kit/prompt-input.tsx)
+   is the one element on screen in every session. Square it off and give it
+   target-lock corner brackets instead of a plain pill — the single signature
+   element for the theme. Two diagonal corners, not four: a lighter touch than
+   a full bracket frame, and it doesn't fight the rounded corner underneath. */
+[data-theme='scifi'] .composer-shell,
+[data-theme='scifi-light'] .composer-shell {
+  position: relative;
+  border-radius: 10px !important;
+}
+[data-theme='scifi'] .composer-shell::before,
+[data-theme='scifi'] .composer-shell::after,
+[data-theme='scifi-light'] .composer-shell::before,
+[data-theme='scifi-light'] .composer-shell::after {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+[data-theme='scifi'] .composer-shell::before,
+[data-theme='scifi-light'] .composer-shell::before {
+  top: -1px;
+  left: -1px;
+  border-top: 2px solid var(--theme-accent);
+  border-left: 2px solid var(--theme-accent);
+}
+[data-theme='scifi'] .composer-shell::after,
+[data-theme='scifi-light'] .composer-shell::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 2px solid var(--theme-accent);
+  border-right: 2px solid var(--theme-accent);
+}
+[data-theme='scifi'] .composer-shell::before,
+[data-theme='scifi'] .composer-shell::after {
+  filter: drop-shadow(0 0 3px rgba(0, 240, 255, 0.5));
+}
+[data-theme='scifi-light'] .composer-shell::before,
+[data-theme='scifi-light'] .composer-shell::after {
+  filter: drop-shadow(0 0 2px rgba(0, 151, 167, 0.35));
+}
