@@ -340,17 +340,35 @@ function RootLayout() {
   useEffect(() => {
     if (typeof window === 'undefined') return undefined
     let cancelled = false
-    fetchClaudeAuthStatus()
-      .then((status) => {
-        if (!cancelled) setAuthStatus(status)
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAuthStatus({ authenticated: true, authRequired: false })
-        }
-      })
+
+    // A single mount-time check is a snapshot, not a fact: if the gateway is
+    // mid-probe or briefly unreachable at that exact moment, the fail-open
+    // fallback below lets the workspace render instead of hard-locking the
+    // whole UI behind a login wall over a transient hiccup. But without
+    // re-checking, that one bad snapshot sticks for the rest of the tab's
+    // life — the shell renders while every cookie-checked request (e.g.
+    // /api/ping) keeps 401ing, with no LoginScreen ever appearing to let the
+    // user actually re-auth. Poll periodically so a real answer replaces the
+    // stale one once the gateway recovers, mirroring statusQuery's own
+    // refetchInterval below in chat-screen.tsx.
+    const check = () => {
+      fetchClaudeAuthStatus()
+        .then((status) => {
+          if (!cancelled) setAuthStatus(status)
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setAuthStatus({ authenticated: true, authRequired: false })
+          }
+        })
+    }
+
+    check()
+    const interval = window.setInterval(check, 30_000)
+
     return () => {
       cancelled = true
+      window.clearInterval(interval)
     }
   }, [])
 
