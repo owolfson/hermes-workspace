@@ -36,13 +36,37 @@ RUN pnpm build
 # the hermes-agent CLI on PATH. Installed from PyPI into an isolated venv, pinned
 # to match the running agent (0.16.0). Python 3.11 (the install script's target)
 # is the node:22-slim base, so the relocated venv works in the runtime stage.
+# The [acp] extra lets Harness Hub's AionCore run `hermes acp` (without it the
+# CLI exits with "ACP dependencies not installed").
 FROM node:22-slim AS hermescli
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-venv python3-pip ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/hermes-cli \
  && /opt/hermes-cli/bin/pip install --no-cache-dir --upgrade pip \
- && /opt/hermes-cli/bin/pip install --no-cache-dir hermes-agent==0.16.0
+ && /opt/hermes-cli/bin/pip install --no-cache-dir 'hermes-agent[acp]==0.16.0'
+
+# ─── AionCore stage (Harness Hub ACP companion) ──────────────────────────
+# Harness Hub (src/server/aioncore-*.ts) talks to AionCore at 127.0.0.1:25808.
+# The desktop app spawns it; in Docker the entrypoint starts it (localhost-only,
+# --local = no auth, so it must never listen on a routable address).
+# Release tarball is verified against the release's own checksums file.
+FROM node:22-slim AS aioncore
+ARG AIONCORE_VERSION=v0.2.2
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && case "${TARGETARCH:-amd64}" in \
+         amd64) TRIPLE=x86_64-unknown-linux-gnu ;; \
+         arm64) TRIPLE=aarch64-unknown-linux-gnu ;; \
+         *) echo "unsupported arch ${TARGETARCH}" >&2; exit 1 ;; \
+       esac \
+    && A="aioncore-${AIONCORE_VERSION}-${TRIPLE}.tar.gz" \
+    && cd /tmp \
+    && curl -fsSLO "https://github.com/iOfficeAI/AionCore/releases/download/${AIONCORE_VERSION}/${A}" \
+    && curl -fsSL "https://github.com/iOfficeAI/AionCore/releases/download/${AIONCORE_VERSION}/aioncore-checksums.txt" \
+         | grep " ${A}\$" | sha256sum -c - \
+    && tar -xzf "${A}" && install -m 0755 aioncore /usr/local/bin/aioncore
 
 # ─── runtime stage ────────────────────────────────────────────────────────
 FROM node:22-slim
@@ -60,6 +84,13 @@ COPY --from=gosu_source /gosu /usr/local/bin/gosu
 # The venv's python shebang resolves to the runtime's /usr/bin/python3 (3.11).
 COPY --from=hermescli /opt/hermes-cli /opt/hermes-cli
 RUN ln -sf /opt/hermes-cli/bin/hermes /usr/local/bin/hermes
+
+# Harness Hub runtimes: AionCore + the agent CLIs it detects on PATH. AionCore
+# launches each through its ACP adapter (npx claude-agent-acp / codex-acp,
+# `gemini --acp`); credentials come from env / mounted config dirs at runtime.
+COPY --from=aioncore /usr/local/bin/aioncore /usr/local/bin/aioncore
+RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli @openai/codex \
+    && npm cache clean --force
 
 WORKDIR /app
 

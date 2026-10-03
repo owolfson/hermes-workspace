@@ -35,6 +35,21 @@ Set `AIONCORE_URL` to use an already-running local or remote companion instead.
 When that variable is present, Hermes Workspace will not launch another local
 process. `AIONCORE_WORK_DIR` overrides the default `~/workspace` working root.
 
+## Docker image
+
+The Docker image bundles AionCore (checksum-verified release binary) plus the
+`claude`, `gemini` and `codex` CLIs, and `docker/entrypoint.sh` supervises
+`aioncore --local --host 127.0.0.1 --port 25808` next to the server. Knobs:
+
+- `AIONCORE_ENABLED=0` skips it; `AIONCORE_URL` uses an external companion instead.
+- `AIONCORE_DATA_DIR` (default `/app/.runtime/aioncore`) holds its database,
+  npx adapter cache and logs — keep it on a volume.
+- `AIONCORE_WORK_DIR` (default `~/workspace`) is where harness conversations run.
+
+Credentials are runtime-only: `CLAUDE_CODE_OAUTH_TOKEN` for Claude, a mounted
+`~/.gemini` for Gemini, a mounted `~/.codex` (config.toml + provider key env)
+for Codex.
+
 ## Security boundary
 
 The renderer only talks to authenticated Hermes Workspace API routes. Runtime

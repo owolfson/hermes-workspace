@@ -45,4 +45,33 @@ if [ "$(id -u)" = "0" ]; then
   exec gosu "$WORKSPACE_USER:$WORKSPACE_GROUP" "$0" "$@"
 fi
 
+# Harness Hub companion. The server reaches it at 127.0.0.1:25808 (or
+# AIONCORE_URL when an external companion is configured). --local disables
+# AionCore's auth, so it is bound to loopback only and supervised here.
+start_aioncore() {
+  [ "${AIONCORE_ENABLED:-1}" = "1" ] || return 0
+  [ -z "${AIONCORE_URL:-}" ] || return 0
+  command -v aioncore >/dev/null 2>&1 || return 0
+
+  local data_dir="${AIONCORE_DATA_DIR:-/app/.runtime/aioncore}"
+  local work_dir="${AIONCORE_WORK_DIR:-$HOME/workspace}"
+  if ! mkdir -p "$data_dir/logs" "$work_dir"; then
+    echo "Warning: AionCore dirs not writable ($data_dir, $work_dir) — Harness Hub disabled"
+    return 0
+  fi
+
+  (
+    while true; do
+      aioncore --local --host 127.0.0.1 --port 25808 \
+        --data-dir "$data_dir" --work-dir "$work_dir" --log-dir "$data_dir/logs" \
+        >>"$data_dir/logs/supervisor.log" 2>&1
+      echo "$(date -Is) aioncore exited with $?, restarting in 5s" >>"$data_dir/logs/supervisor.log"
+      sleep 5
+    done
+  ) &
+  echo "AionCore companion started on 127.0.0.1:25808 (data: $data_dir)"
+}
+
+start_aioncore
+
 exec "$@"
