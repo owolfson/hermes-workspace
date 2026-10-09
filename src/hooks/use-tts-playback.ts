@@ -12,6 +12,7 @@ let snapshot: Snapshot = { key: null, state: 'idle' }
 let currentAudio: HTMLAudioElement | null = null
 let currentUrl: string | null = null
 let currentPlayResolve: (() => void) | null = null
+let currentAbort: AbortController | null = null
 let reqCounter = 0
 
 const listeners = new Set<() => void>()
@@ -31,6 +32,12 @@ function getSnapshot() {
 }
 
 function teardownAudio() {
+  // Cancel in-flight synthesis so abandoned chunks don't queue on the GPU
+  // ahead of whatever plays next.
+  if (currentAbort) {
+    currentAbort.abort()
+    currentAbort = null
+  }
   if (currentAudio) {
     currentAudio.onended = null
     currentAudio.onerror = null
@@ -60,12 +67,15 @@ async function fetchChunkBlob(
   text: string,
   voice: string | undefined,
   myReq: number,
+  signal: AbortSignal,
 ): Promise<Blob | null> {
+  if (myReq !== reqCounter) return null
   try {
     const res = await fetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, voice }),
+      signal,
     })
     if (myReq !== reqCounter || !res.ok) return null
     return await res.blob()
@@ -100,10 +110,11 @@ function playBlob(blob: Blob, myReq: number): Promise<void> {
 }
 
 /**
- * Synthesize and play `text` progressively: the server returns a chunk plan,
- * then each chunk is synthesised and played in order while the next is
- * prefetched — so audio starts after one chunk instead of the whole reply.
- * Re-calling with the same `key` while busy toggles playback off (stop button).
+ * Synthesize and play `text` progressively: the server returns a chunk plan
+ * (short first chunk), then every chunk is synthesised back-to-back while the
+ * earlier ones play — the GPU never idles waiting on playback, which is what
+ * kept gaps out between chunks. Re-calling with the same `key` while busy
+ * toggles playback off (stop button).
  */
 export async function speakText(
   text: string,
@@ -119,6 +130,8 @@ export async function speakText(
   reqCounter++
   const myReq = reqCounter
   teardownAudio()
+  const controller = new AbortController()
+  currentAbort = controller
   emit({ key, state: 'loading' })
 
   try {
@@ -126,6 +139,7 @@ export async function speakText(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, voice: opts.voice, plan: true }),
+      signal: controller.signal,
     })
     if (myReq !== reqCounter) return
     if (!planRes.ok) {
@@ -148,15 +162,20 @@ export async function speakText(
       return
     }
 
-    // Pipeline: prefetch chunk i+1's audio while chunk i plays.
-    let nextBlob = fetchChunkBlob(chunks[0], voice, myReq)
-    for (let i = 0; i < chunks.length; i++) {
-      const blob = await nextBlob
+    // Producer: synthesise chunks one after another (the GPU serialises them
+    // anyway) without waiting for playback. Consumer: play them in order.
+    const blobs: Array<Promise<Blob | null>> = []
+    let previous: Promise<unknown> = Promise.resolve()
+    for (const chunk of chunks) {
+      const next = previous.then(() =>
+        fetchChunkBlob(chunk, voice, myReq, controller.signal),
+      )
+      blobs.push(next)
+      previous = next
+    }
+    for (let i = 0; i < blobs.length; i++) {
+      const blob = await blobs[i]
       if (myReq !== reqCounter) return
-      nextBlob =
-        i + 1 < chunks.length
-          ? fetchChunkBlob(chunks[i + 1], voice, myReq)
-          : Promise.resolve(null)
       if (!blob) continue
       if (snapshot.key !== key || snapshot.state !== 'playing') {
         emit({ key, state: 'playing' })

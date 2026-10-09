@@ -19,15 +19,24 @@ const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini-tts'
 const DEFAULT_OPENAI_VOICE = 'nova'
 
 // chatterbox hallucinates above ~300 chars and emits gibberish below ~25.
-const MAX_CHUNK_CHARS = 300
+// On the 1080 synthesis runs at about real time, so while chunk N plays,
+// chunk N+1 is being made: it only arrives in time if it is no longer than
+// chunk N. Evenly sized ~100-char chunks kept every gap under ~1 s when
+// simulated against real replies (greedy packing left 2-4 s gaps).
+const TARGET_CHUNK_CHARS = 100
+const MAX_CHUNK_CHARS = 130
 const MIN_CHUNK_CHARS = 25
 
 type RecordLike = Record<string, unknown>
 
+// Knobs Chatterbox *Turbo* actually honours (it ignores exaggeration,
+// cfg_weight and min_p), plus pace, which speaches/kokoro apply as `speed`.
 export type TtsParams = {
-  exaggeration: number
-  cfg_weight: number
   temperature: number
+  top_p: number
+  top_k: number
+  rep_penalty: number
+  speed: number
 }
 
 export type ResolvedTtsTarget = {
@@ -62,6 +71,28 @@ function readNumber(value: unknown, fallback: number): number {
     if (Number.isFinite(n)) return n
   }
   return fallback
+}
+
+const MIN_SPEED = 0.5
+const MAX_SPEED = 2
+
+/** Voice knobs: config (UI sliders) → env → defaults matching speaches. */
+function readTtsParams(
+  tts: RecordLike,
+  env: Record<string, string | undefined>,
+): TtsParams {
+  const knob = (key: string, envKey: string, fallback: number) =>
+    readNumber(tts[key], readNumber(env[envKey], fallback))
+  return {
+    temperature: knob('temperature', 'TTS_TEMPERATURE', 0.8),
+    top_p: knob('top_p', 'TTS_TOP_P', 0.95),
+    top_k: Math.round(knob('top_k', 'TTS_TOP_K', 600)),
+    rep_penalty: knob('rep_penalty', 'TTS_REP_PENALTY', 1.2),
+    speed: Math.min(
+      MAX_SPEED,
+      Math.max(MIN_SPEED, knob('speed', 'TTS_SPEED', 1)),
+    ),
+  }
 }
 
 export function parseEnvText(raw: string): Record<string, string> {
@@ -133,7 +164,7 @@ export function resolveTtsTarget(
       model: readString(openai.model) || DEFAULT_OPENAI_MODEL,
       voice: readString(openai.voice) || DEFAULT_OPENAI_VOICE,
       apiKey,
-      params: { exaggeration: 0.5, cfg_weight: 0.3, temperature: 0.8 },
+      params: readTtsParams(tts, runtimeEnv),
     }
   }
 
@@ -153,7 +184,7 @@ export function resolveTtsTarget(
       model: readString(tts.model) || readString(kokoro.model) || 'kokoro',
       voice: readString(tts.voice) || readString(kokoro.voice) || 'zuri',
       apiKey: readString(runtimeEnv.TTS_KOKORO_API_KEY) || 'no-auth',
-      params: { exaggeration: 0.5, cfg_weight: 0.3, temperature: 0.8 },
+      params: readTtsParams(tts, runtimeEnv),
     }
   }
 
@@ -175,23 +206,7 @@ export function resolveTtsTarget(
         DEFAULT_LOCAL_MODEL,
       voice: readString(tts.voice) || readString(local.voice) || DEFAULT_LOCAL_VOICE,
       apiKey: readString(runtimeEnv.TTS_LOCAL_API_KEY) || 'no-auth',
-      // Knobs: config (UI sliders) → env → proven defaults. Note chatterbox
-      // *Turbo* ignores exaggeration/cfg_weight (honours temperature); the full
-      // chatterbox model uses all three.
-      params: {
-        exaggeration: readNumber(
-          tts.exaggeration,
-          readNumber(runtimeEnv.TTS_EXAGGERATION, 0.5),
-        ),
-        cfg_weight: readNumber(
-          tts.cfg_weight,
-          readNumber(runtimeEnv.TTS_CFG_WEIGHT, 0.3),
-        ),
-        temperature: readNumber(
-          tts.temperature,
-          readNumber(runtimeEnv.TTS_TEMPERATURE, 0.8),
-        ),
-      },
+      params: readTtsParams(tts, runtimeEnv),
     }
   }
 
@@ -199,6 +214,35 @@ export function resolveTtsTarget(
     ok: false,
     error: `Configured TTS provider "${provider}" is not supported.`,
   }
+}
+
+/**
+ * Build the OpenAI-style /audio/speech body for one chunk. Each backend only
+ * gets the knobs it honours: chatterbox turbo (speaches) the sampling knobs
+ * plus pace, kokoro pace only, OpenAI pace when it differs from 1x.
+ */
+export function buildSpeechPayload(
+  target: ResolvedTtsTarget,
+  input: string,
+  voice: string,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    model: target.model,
+    input,
+    voice,
+    response_format: 'wav',
+  }
+  const { params } = target
+  if (target.provider === 'local') {
+    payload.temperature = params.temperature
+    payload.top_p = params.top_p
+    payload.top_k = params.top_k
+    payload.rep_penalty = params.rep_penalty
+    payload.speed = params.speed
+  } else if (target.provider === 'kokoro' || params.speed !== 1) {
+    payload.speed = params.speed
+  }
+  return payload
 }
 
 /** Strip markdown / code / URLs so the reader speaks prose, not syntax. */
@@ -227,36 +271,67 @@ export function cleanSpeechText(text: string): string {
  * Sentence-boundary split into <=maxChars chunks; sub-25-char chunks are
  * merged into the previous chunk (matches the Telegram bot's _chunk_text).
  */
+/** Split a sentence at , ; : and word-split any clause still over the limit. */
+function splitClauses(sentence: string, maxChars: number): string[] {
+  const out: string[] = []
+  for (const clause of sentence.split(/(?<=[,;:])\s+/)) {
+    let rest = clause
+    while (rest.length > maxChars) {
+      const cut = rest.lastIndexOf(' ', maxChars)
+      if (cut < MIN_CHUNK_CHARS) break
+      out.push(rest.slice(0, cut))
+      rest = rest.slice(cut + 1)
+    }
+    out.push(rest)
+  }
+  return out
+}
+
+/**
+ * Cut text into evenly sized chunks at sentence ends (clause/word breaks only
+ * for sentences over the limit): pick the chunk count for ~targetChars each,
+ * then close a chunk once it reaches its share of the text.
+ */
 export function chunkSpeechText(
   text: string,
   maxChars: number = MAX_CHUNK_CHARS,
+  targetChars: number = TARGET_CHUNK_CHARS,
 ): string[] {
   const trimmed = text.trim()
   if (!trimmed) return []
 
-  const sentences = trimmed.split(/(?<=[.!?])\s+/)
+  const pieces = trimmed
+    .split(/(?<=[.!?])\s+/)
+    .flatMap((sentence) =>
+      sentence.length > maxChars ? splitClauses(sentence, maxChars) : [sentence],
+    )
+  const total = pieces.reduce((sum, piece) => sum + piece.length + 1, 0)
+  const share = total / Math.max(1, Math.round(total / targetChars))
+
   const chunks: string[] = []
   let current = ''
-  for (const sentence of sentences) {
-    const candidate = current ? `${current} ${sentence}` : sentence
-    if (candidate.length <= maxChars) {
+  let consumed = 0
+  for (const piece of pieces) {
+    const candidate = current ? `${current} ${piece}` : piece
+    const boundary = share * (chunks.length + 1)
+    // A tiny chunk always absorbs the next piece rather than going out alone.
+    const canClose = current.length >= MIN_CHUNK_CHARS
+    if (canClose && (candidate.length > maxChars || consumed + piece.length / 2 > boundary)) {
+      chunks.push(current)
+      current = piece
+    } else {
       current = candidate
+    }
+    consumed += piece.length + 1
+  }
+  if (current) {
+    if (chunks.length && current.length < MIN_CHUNK_CHARS) {
+      chunks[chunks.length - 1] = `${chunks[chunks.length - 1]} ${current}`
     } else {
-      if (current) chunks.push(current)
-      current = sentence
+      chunks.push(current)
     }
   }
-  if (current) chunks.push(current)
-
-  const merged: string[] = []
-  for (const chunk of chunks) {
-    if (merged.length && chunk.length < MIN_CHUNK_CHARS) {
-      merged[merged.length - 1] = `${merged[merged.length - 1]} ${chunk}`
-    } else {
-      merged.push(chunk)
-    }
-  }
-  return merged
+  return chunks
 }
 
 // ── WAV (PCM) helpers ──────────────────────────────────────────────────────

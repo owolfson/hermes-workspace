@@ -2185,6 +2185,7 @@ function KnobRow({
   step,
   value,
   onCommit,
+  decimals = 2,
   disabled = false,
 }: {
   label: string
@@ -2194,16 +2195,29 @@ function KnobRow({
   step: number
   value: number
   onCommit: (v: number) => void
+  decimals?: number
   disabled?: boolean
 }) {
   // Track the value locally during a drag; only persist on release so we don't
   // fire a config write on every slider tick.
   const [local, setLocal] = useState(value)
   useEffect(() => setLocal(value), [value])
-  const commit = () => {
-    const rounded = Number(local.toFixed(2))
-    if (rounded !== value) onCommit(rounded)
-  }
+  const inputRef = useRef<HTMLInputElement>(null)
+  const latest = useRef({ value, onCommit })
+  latest.current = { value, onCommit }
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    // The native `change` event fires once when the user lets go (mouse, touch
+    // or keyboard) — even if the pointer is released off the slider. React's
+    // onChange is the per-tick `input` event, so it can't be used for this.
+    const commit = () => {
+      const rounded = Number(parseFloat(el.value).toFixed(2))
+      if (rounded !== latest.current.value) latest.current.onCommit(rounded)
+    }
+    el.addEventListener('change', commit)
+    return () => el.removeEventListener('change', commit)
+  }, [])
   return (
     <div className={cn('flex items-center gap-3', disabled && 'opacity-50')}>
       <div className="w-28 shrink-0">
@@ -2217,17 +2231,14 @@ function KnobRow({
         min={min}
         max={max}
         step={step}
+        ref={inputRef}
         value={local}
         disabled={disabled}
         onChange={(e) => setLocal(parseFloat(e.target.value))}
-        onMouseUp={commit}
-        onTouchEnd={commit}
-        onKeyUp={commit}
-        onBlur={commit}
         className="flex-1 accent-primary-500"
       />
       <span className="w-9 shrink-0 text-right text-xs tabular-nums text-primary-600">
-        {local.toFixed(2)}
+        {local.toFixed(decimals)}
       </span>
     </div>
   )
@@ -2317,10 +2328,8 @@ function VoiceContent() {
   const localVoice = String(tts.voice || 'anushri')
   const autoSpeak = tts.autoSpeak === true
   const localModel = String(tts.model || models[0] || 'chatterbox-turbo')
-  const isLocal =
-    ttsProvider === 'local' ||
-    ttsProvider === 'speaches' ||
-    ttsProvider === 'kokoro'
+  const isChatterbox = ttsProvider === 'local' || ttsProvider === 'speaches'
+  const isLocal = isChatterbox || ttsProvider === 'kokoro'
   const knobNum = (key: string, def: number) =>
     typeof tts[key] === 'number' ? (tts[key] as number) : def
 
@@ -2402,38 +2411,61 @@ function VoiceContent() {
             </select>
           </Row>
         )}
-        {isLocal && (
+        {(isLocal || ttsProvider === 'openai') && (
           <div className="mt-1 space-y-2 rounded-lg border border-primary-200/60 p-2 dark:border-neutral-700/60">
             <p className="text-[11px] font-medium uppercase tracking-wider text-primary-400">
-              Chatterbox knobs
+              {isChatterbox ? 'Chatterbox Turbo knobs' : 'Delivery'}
             </p>
             <KnobRow
-              label="Temperature"
-              hint="Expressiveness / randomness"
-              min={0.1}
-              max={1.5}
+              label="Pace"
+              hint="Speaking speed — 1.00 is normal"
+              min={0.5}
+              max={2}
               step={0.05}
-              value={knobNum('temperature', 0.8)}
-              onCommit={(v) => saveTts('temperature', v)}
+              value={knobNum('speed', 1)}
+              onCommit={(v) => saveTts('speed', v)}
             />
-            <KnobRow
-              label="Exaggeration"
-              hint="Emotional intensity"
-              min={0.25}
-              max={1}
-              step={0.05}
-              value={knobNum('exaggeration', 0.5)}
-              onCommit={(v) => saveTts('exaggeration', v)}
-            />
-            <KnobRow
-              label="CFG weight"
-              hint="Pacing / adherence"
-              min={0}
-              max={1}
-              step={0.05}
-              value={knobNum('cfg_weight', 0.3)}
-              onCommit={(v) => saveTts('cfg_weight', v)}
-            />
+            {isChatterbox && (
+              <>
+                <KnobRow
+                  label="Temperature"
+                  hint="Expressiveness / randomness"
+                  min={0.1}
+                  max={1.5}
+                  step={0.05}
+                  value={knobNum('temperature', 0.8)}
+                  onCommit={(v) => saveTts('temperature', v)}
+                />
+                <KnobRow
+                  label="Top P"
+                  hint="Sampling breadth — lower is steadier"
+                  min={0.5}
+                  max={1}
+                  step={0.01}
+                  value={knobNum('top_p', 0.95)}
+                  onCommit={(v) => saveTts('top_p', v)}
+                />
+                <KnobRow
+                  label="Top K"
+                  hint="Candidate pool — lower is safer"
+                  min={50}
+                  max={1000}
+                  step={10}
+                  decimals={0}
+                  value={knobNum('top_k', 600)}
+                  onCommit={(v) => saveTts('top_k', v)}
+                />
+                <KnobRow
+                  label="Repetition penalty"
+                  hint="Higher curbs stutter / loops"
+                  min={1}
+                  max={2}
+                  step={0.05}
+                  value={knobNum('rep_penalty', 1.2)}
+                  onCommit={(v) => saveTts('rep_penalty', v)}
+                />
+              </>
+            )}
           </div>
         )}
         {ttsProvider === 'openai' && (

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
+  buildSpeechPayload,
   chunkSpeechText,
   cleanSpeechText,
   concatWav,
@@ -87,42 +88,36 @@ describe('chunkSpeechText', () => {
   test('returns empty array for empty input', () => {
     expect(chunkSpeechText('   ')).toEqual([])
   })
-})
 
-describe('concatWav', () => {
-  test('concatenates PCM payloads of multiple WAVs', () => {
-    const a = makeWav([1, 2, 3])
-    const b = makeWav([4, 5])
-    const out = concatWav([a, b])
-    expect(wavSamples(out)).toEqual([1, 2, 3, 4, 5])
+  test('never opens with a tiny chunk (chatterbox garbles them)', () => {
+    const long = 'L'.repeat(150) + '.'
+    expect(chunkSpeechText(`Got it. ${long}`)).toEqual([`Got it. ${long}`])
   })
 
-  test('rewrites RIFF and data sizes to match merged payload', () => {
-    const out = concatWav([makeWav([1, 2, 3]), makeWav([4, 5])])
-    expect(out.readUInt32LE(40)).toBe(5 * 2) // data size
-    expect(out.readUInt32LE(4)).toBe(36 + 5 * 2) // RIFF size
+  test('cuts text into evenly sized ~100-char chunks', () => {
+    const s = (c: string) => c.repeat(49) + '.'
+    const [a, b, c, d, e, f, g, h] = 'ABCDEFGH'.split('').map(s)
+    expect(chunkSpeechText([a, b, c, d, e, f, g, h].join(' '))).toEqual([
+      `${a} ${b}`,
+      `${c} ${d}`,
+      `${e} ${f}`,
+      `${g} ${h}`,
+    ])
   })
 
-  test('returns the single buffer unchanged when given one', () => {
-    const a = makeWav([1, 2, 3])
-    expect(concatWav([a]).equals(a)).toBe(true)
-  })
-})
-
-describe('trimTrailingSilence', () => {
-  test('drops trailing near-zero samples', () => {
-    const loud = [12000, -12000, 12000]
-    const silence = new Array(5000).fill(0)
-    const wav = makeWav([...loud, ...silence])
-    const trimmed = trimTrailingSilence(wav)
-    // Keeps the loud part; trailing silence largely removed.
-    expect(wavSamples(trimmed).length).toBeLessThan(loud.length + silence.length)
-    expect(wavSamples(trimmed).length).toBeGreaterThanOrEqual(loud.length)
+  test('splits an over-long sentence at clause breaks', () => {
+    const x = 'X'.repeat(50) + ','
+    const y = 'Y'.repeat(50) + ','
+    const z = 'Z'.repeat(50) + '.'
+    expect(chunkSpeechText(`${x} ${y} ${z}`)).toEqual([`${x} ${y}`, z])
   })
 
-  test('leaves audio without trailing silence intact', () => {
-    const wav = makeWav([10000, -10000, 10000, -10000])
-    expect(wavSamples(trimTrailingSilence(wav)).length).toBe(4)
+  test('word-splits a clause longer than the limit', () => {
+    const words = Array.from({ length: 40 }, () => 'word').join(' ') + '.'
+    const chunks = chunkSpeechText(words)
+    expect(chunks.length).toBe(2)
+    expect(chunks.every((c) => c.length <= 130)).toBe(true)
+    expect(chunks.join(' ')).toBe(words)
   })
 })
 
@@ -136,9 +131,11 @@ describe('resolveTtsTarget', () => {
     expect(t.model).toBe('chatterbox-turbo')
     expect(t.voice).toBe('anushri')
     expect(t.params).toEqual({
-      exaggeration: 0.5,
-      cfg_weight: 0.3,
       temperature: 0.8,
+      top_p: 0.95,
+      top_k: 600,
+      rep_penalty: 1.2,
+      speed: 1,
     })
   })
 
@@ -147,37 +144,55 @@ describe('resolveTtsTarget', () => {
     expect(t.ok && t.voice).toBe('claude')
   })
 
-  test('reads chatterbox knobs from config when present', () => {
+  test('reads chatterbox turbo knobs and pace from config when present', () => {
     const t = resolveTtsTarget(
       {
         tts: {
           provider: 'local',
-          exaggeration: 0.7,
-          cfg_weight: 0.4,
           temperature: 1.1,
+          top_p: 0.8,
+          top_k: 300,
+          rep_penalty: 1.5,
+          speed: 1.25,
         },
       },
       {},
       {},
     )
     expect(t.ok && t.params).toEqual({
-      exaggeration: 0.7,
-      cfg_weight: 0.4,
       temperature: 1.1,
+      top_p: 0.8,
+      top_k: 300,
+      rep_penalty: 1.5,
+      speed: 1.25,
     })
   })
 
   test('config knobs override env, env overrides defaults', () => {
     const t = resolveTtsTarget(
       { tts: { provider: 'local', temperature: 0.9 } },
-      { TTS_EXAGGERATION: '0.6' },
+      { TTS_TOP_P: '0.85', TTS_TOP_K: '400', TTS_REP_PENALTY: '1.3', TTS_SPEED: '0.9' },
       {},
     )
     expect(t.ok && t.params).toEqual({
-      exaggeration: 0.6, // from env
-      cfg_weight: 0.3, // default
       temperature: 0.9, // from config
+      top_p: 0.85, // from env
+      top_k: 400, // from env
+      rep_penalty: 1.3, // from env
+      speed: 0.9, // from env
     })
+  })
+
+  test('clamps pace to the 0.5x-2x range', () => {
+    const fast = resolveTtsTarget({ tts: { provider: 'local', speed: 5 } }, {}, {})
+    const slow = resolveTtsTarget({ tts: { provider: 'kokoro', speed: 0.1 } }, {}, {})
+    expect(fast.ok && fast.params.speed).toBe(2)
+    expect(slow.ok && slow.params.speed).toBe(0.5)
+  })
+
+  test('kokoro honours the configured pace', () => {
+    const t = resolveTtsTarget({ tts: { provider: 'kokoro', speed: 1.3 } }, {}, {})
+    expect(t.ok && t.params.speed).toBe(1.3)
   })
 
   test('reads a configured local model override', () => {
@@ -220,5 +235,62 @@ describe('resolveTtsTarget', () => {
     expect(t.voice).toBe('nova')
     expect(t.apiKey).toBe('sk-test')
     expect(t.baseUrl).toBe('https://api.openai.com/v1')
+  })
+})
+
+describe('buildSpeechPayload', () => {
+  const local = resolveTtsTarget(
+    {
+      tts: {
+        provider: 'local',
+        temperature: 0.7,
+        top_p: 0.9,
+        top_k: 250,
+        rep_penalty: 1.4,
+        speed: 1.2,
+      },
+    },
+    {},
+    {},
+  )
+
+  test('local sends every chatterbox turbo knob plus pace', () => {
+    if (!local.ok) throw new Error('expected ok')
+    expect(buildSpeechPayload(local, 'Hello there.', 'tiffany')).toEqual({
+      model: 'chatterbox-turbo',
+      input: 'Hello there.',
+      voice: 'tiffany',
+      response_format: 'wav',
+      temperature: 0.7,
+      top_p: 0.9,
+      top_k: 250,
+      rep_penalty: 1.4,
+      speed: 1.2,
+    })
+  })
+
+  test('local never sends knobs turbo ignores', () => {
+    if (!local.ok) throw new Error('expected ok')
+    const p = buildSpeechPayload(local, 'Hi.', 'tiffany')
+    expect(p).not.toHaveProperty('exaggeration')
+    expect(p).not.toHaveProperty('cfg_weight')
+  })
+
+  test('kokoro sends pace only', () => {
+    const k = resolveTtsTarget({ tts: { provider: 'kokoro', speed: 1.4 } }, {}, {})
+    if (!k.ok) throw new Error('expected ok')
+    expect(buildSpeechPayload(k, 'Hi.', 'zuri')).toEqual({
+      model: 'kokoro',
+      input: 'Hi.',
+      voice: 'zuri',
+      response_format: 'wav',
+      speed: 1.4,
+    })
+  })
+
+  test('openai omits speed at the default pace', () => {
+    const o = resolveTtsTarget({ tts: { provider: 'openai' } }, { OPENAI_API_KEY: 'k' }, {})
+    if (!o.ok) throw new Error('expected ok')
+    expect(buildSpeechPayload(o, 'Hi.', 'nova')).not.toHaveProperty('speed')
   })
 })

@@ -12,6 +12,7 @@ import {
   resolveHermesConfigPaths,
 } from '../../server/hermes-config-store'
 import {
+  buildSpeechPayload,
   chunkSpeechText,
   cleanSpeechText,
   concatWav,
@@ -70,18 +71,7 @@ export const Route = createFileRoute('/api/tts')({
           const wavChunks: Buffer[] = []
 
           for (const chunk of chunks) {
-            const payload: Record<string, unknown> = {
-              model: target.model,
-              input: chunk,
-              voice,
-              response_format: 'wav',
-            }
-            // chatterbox-turbo voice-control knobs (ignored by other backends).
-            if (target.provider === 'local') {
-              payload.exaggeration = target.params.exaggeration
-              payload.cfg_weight = target.params.cfg_weight
-              payload.temperature = target.params.temperature
-            }
+            const payload = buildSpeechPayload(target, chunk, voice)
 
             const upstream = await fetch(`${target.baseUrl}/audio/speech`, {
               method: 'POST',
@@ -90,6 +80,9 @@ export const Route = createFileRoute('/api/tts')({
                 Authorization: `Bearer ${target.apiKey}`,
               },
               body: JSON.stringify(payload),
+              // Listener stopped/skipped: drop the upstream request so speaches
+              // skips it instead of synthesising audio nobody will hear.
+              signal: request.signal,
             })
 
             if (!upstream.ok) {

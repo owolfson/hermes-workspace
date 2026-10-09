@@ -2335,6 +2335,10 @@ function MessageItemComponent({
   // (module-level set, deduped across remounts).
   const ttsSettings = useTtsSettings()
   const messageSpeakKey = (message as { id?: string }).id || String(timestamp)
+  // The streamed reply and its persisted copy can carry different ids, which
+  // spoke the same reply twice (two GPU jobs, the second one queued behind the
+  // first). Dedupe on the text as well.
+  const textSpeakKey = `text:${fullText.length}:${fullText.slice(0, 160)}`
   useEffect(() => {
     if (
       isUser ||
@@ -2342,11 +2346,13 @@ function MessageItemComponent({
       effectiveIsStreaming ||
       !ttsSettings.autoSpeak ||
       timestamp < AUTO_SPEAK_SESSION_START ||
-      autoSpokenKeys.has(messageSpeakKey)
+      autoSpokenKeys.has(messageSpeakKey) ||
+      autoSpokenKeys.has(textSpeakKey)
     ) {
       return
     }
     autoSpokenKeys.add(messageSpeakKey)
+    autoSpokenKeys.add(textSpeakKey)
     speakText(fullText, { key: messageSpeakKey }).catch(() => {})
   }, [
     effectiveIsStreaming,
@@ -2355,6 +2361,7 @@ function MessageItemComponent({
     ttsSettings.autoSpeak,
     fullText,
     messageSpeakKey,
+    textSpeakKey,
     timestamp,
   ])
 
