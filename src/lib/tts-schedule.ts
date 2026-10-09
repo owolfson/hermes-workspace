@@ -16,11 +16,13 @@ export type SynthModel = {
   audioSecPerChar: number
 }
 
-// Fitted on 218 live chunks, 2026-10-08 (speaches-chatterbox, turbo, GTX 1080):
-// synth = 0.59s + 53.3ms/char (median error 18%, p90 42%); speech ≈ 14.5 chars/s.
+// Fitted on live chunks (speaches-chatterbox, turbo, GTX 1080), speech ≈ 14.5 chars/s:
+//   2026-10-08 stock token loop: synth = 0.59s + 53.3ms/char (RTF 0.8-1.0)
+//   2026-10-09 CUDA-graph T3 decode: synth = 0.39s + 38.4ms/char (RTF 0.6-0.74; median err 12%, p90 39%)
+// The player rescales by the speed it actually observes, so a stale model only costs start latency.
 export const DEFAULT_SYNTH_MODEL: SynthModel = {
-  overheadSec: 0.6,
-  secPerChar: 0.0533,
+  overheadSec: 0.39,
+  secPerChar: 0.0384,
   audioSecPerChar: 0.069,
 }
 

@@ -71,9 +71,11 @@ describe('initialBufferWait', () => {
   test('short opening chunk before a long one: buffers instead of pausing after it', () => {
     const chunks = firstReady(OWEN)
     const wait = initialBufferWait(chunks, chunks[0].readyAt!)
-    // chunk 1 needs ~6.5s of synthesis but chunk 0 only plays ~2.1s
-    expect(wait).toBeGreaterThan(4)
-    expect(wait).toBeLessThan(7)
+    // chunk 1 takes longer to synthesise than chunk 0 takes to play: wait at least the difference
+    const deficit = synth(111) - 31 * M.audioSecPerChar
+    expect(deficit).toBeGreaterThan(1)
+    expect(wait).toBeGreaterThan(deficit)
+    expect(wait).toBeLessThan(deficit + 3)
   })
 
   test('a long opening chunk starts right away', () => {
@@ -114,9 +116,11 @@ describe('playback with the buffer (simulated against the measured model)', () =
     expect(firstAudio).toBeLessThan(9)
   })
 
-  test('without the buffer the same reply pauses ~4s after the first sentence', () => {
+  test('without the buffer the same reply pauses after the first sentence', () => {
     const { gaps } = simulate(OWEN, 1, 0)
-    expect(gaps[0]).toBeGreaterThan(3.5)
+    // chunk 1 is still being synthesised when the 31-char opener finishes playing
+    expect(gaps[0]).toBeCloseTo(synth(111) - 31 * M.audioSecPerChar, 1)
+    expect(gaps[0]).toBeGreaterThan(2)
   })
 
   test('the wait is capped when the server is too slow to ever keep up', () => {
