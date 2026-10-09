@@ -5,6 +5,10 @@
  *   "anthropic/claude-sonnet-4-5" → "Claude Sonnet 4.5"
  *   "openai-codex/gpt-5.4" → "Codex (GPT-5.4)"
  *   "ollama-pc1/pc1-coder:latest" → "Local: pc1-coder"
+ *   "llm7/gemini-3.8-flash-high" → "gemini-3.8-flash-high"
+ *
+ * Ids not in MODEL_MAP are shown exactly as the provider names them —
+ * title-casing them invents names that exist nowhere ("Qwen3.8 27b Dense").
  */
 
 const MODEL_MAP: Record<string, string> = {
@@ -53,7 +57,7 @@ export function formatModelName(raw: string | undefined | null): string {
   const slashIdx = raw.indexOf('/')
   if (slashIdx === -1) {
     // No provider prefix — check model map
-    return MODEL_MAP[raw] || titleCase(raw)
+    return MODEL_MAP[raw] || raw
   }
 
   const provider = raw.slice(0, slashIdx)
@@ -79,8 +83,8 @@ export function formatModelName(raw: string | undefined | null): string {
     return `Codex (${titleCase(model)})`
   }
 
-  // Generic: strip provider, clean up model name
-  return titleCase(model)
+  // Generic: strip provider, keep the model id as-is
+  return model
 }
 
 function titleCase(s: string): string {

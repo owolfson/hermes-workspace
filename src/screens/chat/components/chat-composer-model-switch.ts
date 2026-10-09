@@ -24,22 +24,25 @@ export function getZeroForkModelInfoFlags(
   payload: unknown,
 ): ZeroForkModelInfoFlags {
   const record = readRecord(payload)
-  const capabilities = readRecord(record?.capabilities)
+  // No model info yet (query in flight) or unreadable: unknown, not "vanilla".
+  // Treating it as vanilla rejected picks made while /api/model/info loaded.
+  if (!record) return { vanillaAgent: false, supportsRuntimeSwitching: false }
+  const capabilities = readRecord(record.capabilities)
 
   const supportsRuntimeSwitching =
-    readBoolean(record?.supportsRuntimeSwitching) ??
-    readBoolean(record?.supports_runtime_switching) ??
+    readBoolean(record.supportsRuntimeSwitching) ??
+    readBoolean(record.supports_runtime_switching) ??
     readBoolean(capabilities?.supportsRuntimeSwitching) ??
     readBoolean(capabilities?.supports_runtime_switching) ??
     false
 
   const runtime =
-    readString(record?.runtime) ||
-    readString(record?.agentRuntime) ||
-    readString(record?.agent_runtime) ||
-    readString(record?.agentType) ||
-    readString(record?.agent_type) ||
-    readString(record?.backend)
+    readString(record.runtime) ||
+    readString(record.agentRuntime) ||
+    readString(record.agent_runtime) ||
+    readString(record.agentType) ||
+    readString(record.agent_type) ||
+    readString(record.backend)
 
   const vanillaAgent = runtime
     ? /vanilla|upstream|dashboard|hermes-agent/i.test(runtime)

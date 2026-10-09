@@ -48,7 +48,10 @@ import {
 import { useSettings } from '@/hooks/use-settings'
 import { MOBILE_TAB_BAR_OFFSET } from '@/components/mobile-tab-bar'
 import { useWorkspaceStore } from '@/stores/workspace-store'
-import { useSessionModelStore } from '@/stores/session-model-store'
+import {
+  sessionModelKey,
+  useSessionModelStore,
+} from '@/stores/session-model-store'
 import { Button } from '@/components/ui/button'
 import { usePinnedModels } from '@/hooks/use-pinned-models'
 // import { ModeSelector } from '@/components/mode-selector'
@@ -169,6 +172,7 @@ type ClaudeConfigApiResponse = {
 }
 
 type ModelInfoApiResponse = {
+  model?: string | null
   gatewayMode?: string | null
   supportsRuntimeSwitching?: boolean | null
   vanillaAgent?: boolean | null
@@ -595,6 +599,9 @@ function isCurrentModel(
 
   // Current model is "something/<entryId>"
   if (cm.endsWith(`/${eid}`)) return true
+
+  // Entry is "provider/<currentModel>" (current model is a bare default id)
+  if (eid.endsWith(`/${cm}`)) return true
 
   // Resolved entry key matches current model exactly
   const resolved = eprov ? `${eprov}/${eid}` : eid
@@ -1108,7 +1115,7 @@ function ChatComposerComponent({
   // Replaces an earlier flow that PATCHed ~/.hermes/config.yaml — that path
   // 404s and would clobber the global default for every channel anyway.
   const persistedSessionModel = useSessionModelStore((s) =>
-    s.getModel(sessionKey),
+    s.getModel(sessionModelKey(sessionKey)),
   )
   const setPersistedSessionModel = useSessionModelStore((s) => s.setModel)
 
@@ -1141,9 +1148,7 @@ function ChatComposerComponent({
       // Per-session, browser-local persistence. No global config write —
       // picking a model here only affects this chat. The actual model is
       // passed on each request via the chat-completion `model` field.
-      if (normalizedSessionKey) {
-        setPersistedSessionModel(normalizedSessionKey, resolved)
-      }
+      setPersistedSessionModel(sessionModelKey(normalizedSessionKey), resolved)
       setIsModelMenuOpen(false)
     },
     [
@@ -1225,8 +1230,22 @@ function ChatComposerComponent({
   }, [modelsQuery.data])
   // Derive the label directly from the store so navigation between sessions
   // updates without a render-window flash from a stale React-state mirror.
-  const modelButtonLabel =
-    persistedSessionModel || currentModel || configuredModel || '⚕ Hermes Agent'
+  // Hermes' real default, shown as its picker entry ("qwen3.8-27b-dense" →
+  // "local-qwen/qwen3.8-27b-dense") so the label doesn't change form depending
+  // on which query resolves first.
+  const hermesDefaultModel = useMemo(() => {
+    const bare = modelInfoQuery.data?.model?.trim() || ''
+    if (!bare) return ''
+    const models = modelsQuery.data?.models ?? []
+    for (const entry of models) {
+      const id = typeof entry === 'string' ? entry : entry.id || ''
+      if (id === bare || id.endsWith(`/${bare}`)) return id
+    }
+    return bare
+  }, [modelInfoQuery.data, modelsQuery.data])
+  const activeModel =
+    persistedSessionModel || hermesDefaultModel || configuredModel || currentModel
+  const modelButtonLabel = activeModel || '⚕ Hermes Agent'
 
   // Measure composer height and set CSS variable for scroll padding
   useLayoutEffect(() => {
@@ -2605,7 +2624,7 @@ function ChatComposerComponent({
                           }
                           const renderEntry = (entry: (typeof parsed)[0]) => {
                             const isActive = isCurrentModel(
-                              persistedSessionModel || currentModel,
+                              activeModel,
                               entry.id,
                               entry.provider,
                             )
@@ -2988,7 +3007,7 @@ function ChatComposerComponent({
                                       }
                                       const renderEntry = (entry: (typeof parsed)[0]) => {
                                         const isActive = isCurrentModel(
-                                          persistedSessionModel || currentModel,
+                                          activeModel,
                                           entry.id,
                                           entry.provider,
                                         )

@@ -66,6 +66,26 @@ function normalizeModel(entry: unknown): ModelEntry | null {
   }
 }
 
+/**
+ * Drop a bare id ("qwen3.8-27b-dense") when a provider-routed entry for the
+ * same model ("local-qwen/qwen3.8-27b-dense") is listed — both reach the same
+ * model, and the bare one (Hermes' default alias / config default) has no name.
+ */
+export function dropBareAliasDuplicates(
+  models: Array<ModelEntry>,
+): Array<ModelEntry> {
+  const routedTails = new Set(
+    models
+      .map((m) => m.id ?? '')
+      .filter((id) => id.includes('/'))
+      .map((id) => id.slice(id.indexOf('/') + 1)),
+  )
+  return models.filter((m) => {
+    const id = m.id ?? ''
+    return id.includes('/') || !routedTails.has(id)
+  })
+}
+
 export function mergeModelEntries(...sources: Array<Array<ModelEntry>>): Array<ModelEntry> {
   const merged: Array<ModelEntry> = []
   const seen = new Set<string>()
@@ -419,11 +439,18 @@ export const Route = createFileRoute('/api/models')({
           let models = readClaudeModelsJson()
           let source = 'models.json'
 
-          // Ensure the default model from config.yaml is always first
+          // Ensure the default model from config.yaml is always first —
+          // as its models.json entry (which carries the real name) when it
+          // has one, e.g. default "qwen3.8-27b-dense" → "local-qwen/qwen3.8-27b-dense".
           const defaultModel = readClaudeDefaultModel()
           if (defaultModel) {
-            models = models.filter((m) => m.id !== defaultModel.id)
-            models.unshift(defaultModel)
+            const named =
+              models.find((m) => m.id === defaultModel.id) ??
+              models.find((m) => m.id?.endsWith(`/${defaultModel.id}`))
+            models = models.filter(
+              (m) => m !== named && m.id !== defaultModel.id,
+            )
+            models.unshift(named ?? defaultModel)
           }
 
           // Merge providers.*.models + provider defaults + model_aliases
@@ -466,6 +493,8 @@ export const Route = createFileRoute('/api/models')({
           for (const m of localModels) {
             ensureProviderInConfig(m.provider)
           }
+
+          models = dropBareAliasDuplicates(models)
 
           const configuredProviders = Array.from(
             new Set(

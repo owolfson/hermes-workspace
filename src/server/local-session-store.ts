@@ -79,6 +79,11 @@ export function ensureLocalSession(
     }
     store.messages[sessionId] = []
     saveToDisk()
+  } else if (model && store.sessions[sessionId].model !== model) {
+    // Track the model the latest turn was sent with; session-status reports it.
+    store.sessions[sessionId].model = model
+    store.sessions[sessionId].updatedAt = Date.now()
+    saveToDisk()
   }
   return store.sessions[sessionId]
 }

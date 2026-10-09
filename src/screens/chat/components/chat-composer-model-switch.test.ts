@@ -45,6 +45,14 @@ describe('zero-fork model switch guard', () => {
     expect(shouldBlockZeroForkModelSwitch('zero-fork', flags)).toBe(true)
   })
 
+  it('does not block a pick while model info is still loading or unreadable', () => {
+    for (const payload of [undefined, null, 'oops']) {
+      expect(
+        shouldBlockZeroForkModelSwitch('zero-fork', getZeroForkModelInfoFlags(payload)),
+      ).toBe(false)
+    }
+  })
+
   it('keeps the toast copy stable', () => {
     expect(MODEL_SWITCH_BLOCKED_TOAST).toBe(
       'Model switching requires the enhanced runtime. Set a default via `claude config set model <id>` — the displayed model reflects your config.',

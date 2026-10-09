@@ -127,4 +127,56 @@ describe('models route', () => {
     expect(json.models[0].id).toBe('nest-model')
     expect(json.models[0].provider).toBe('anthropic')
   })
+
+  it('lists a bare default id once, as its named provider-routed entry', async () => {
+    const envHome = '/mock/profiles/owen'
+    process.env.CLAUDE_HOME = envHome
+
+    const configYaml = [
+      'model: qwen3.8-27b-dense',
+      'provider: local-qwen',
+      'providers:',
+      '  local-qwen:',
+      '    models:',
+      '      qwen3.8-27b-dense: {}',
+      '',
+    ].join('\n')
+    const modelsJson = JSON.stringify([
+      { id: 'local-qwen/qwen3.8-27b-dense', name: 'Qwen local', provider: 'local-qwen' },
+      { id: 'llm7/gemini-3.8-flash-high', name: 'gemini-3.8-flash-high', provider: 'llm7' },
+    ])
+    existsSync.mockImplementation(
+      (p: string) => p === `${envHome}/models.json` || p === `${envHome}/config.yaml`,
+    )
+    readFileSync.mockImplementation((p: string) => {
+      if (p === `${envHome}/config.yaml`) return configYaml
+      if (p === `${envHome}/models.json`) return modelsJson
+      return ''
+    })
+
+    const get = await getHandler()
+    const res = await get({ request: new Request('http://localhost/api/models') })
+    const json = await res.json()
+    const ids = json.models.map((m: { id: string }) => m.id)
+    expect(ids[0]).toBe('local-qwen/qwen3.8-27b-dense')
+    expect(json.models[0].name).toBe('Qwen local')
+    expect(ids).not.toContain('qwen3.8-27b-dense')
+    expect(ids).toContain('llm7/gemini-3.8-flash-high')
+  })
+})
+
+describe('dropBareAliasDuplicates', () => {
+  it('keeps bare ids that have no routed twin', async () => {
+    vi.resetModules()
+    const { dropBareAliasDuplicates } = await import('../models')
+    const out = dropBareAliasDuplicates([
+      { id: 'qwen3.8-27b-dense', name: 'qwen3.8-27b-dense', provider: 'hermes' },
+      { id: 'local-qwen/qwen3.8-27b-dense', name: 'Qwen', provider: 'local-qwen' },
+      { id: 'solo-model', name: 'solo-model', provider: 'x' },
+    ])
+    expect(out.map((m) => m.id)).toEqual([
+      'local-qwen/qwen3.8-27b-dense',
+      'solo-model',
+    ])
+  })
 })

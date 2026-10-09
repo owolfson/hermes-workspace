@@ -1,5 +1,3 @@
-// Module-level local model override — set by composer when user picks a local model
-// Avoids prop threading. Reset when switching back to cloud models.
 import {
   useCallback,
   useEffect,
@@ -67,6 +65,7 @@ import {
   CHAT_RUN_COMMAND_EVENT,
   CHAT_SUBMIT_SELECTION_EVENT,
 } from './chat-events'
+import { _localModelOverride } from './local-model-override'
 import type {
   ChatRunCommandDetail,
   ChatSubmitSelectionDetail,
@@ -106,15 +105,15 @@ import { ContextAlertModal } from '@/components/usage-meter/context-alert-modal'
 import { ErrorToastContainer, showErrorToast } from '@/components/error-toast'
 // ContextMeter removed — ContextBar (PR #32) replaces it
 import { persistRecoveryMessage, useChatStore } from '@/stores/chat-store'
-import { useSessionModelStore } from '@/stores/session-model-store'
+import {
+  sessionModelKey,
+  useSessionModelStore,
+} from '@/stores/session-model-store'
 import { useResearchCard } from '@/hooks/use-research-card'
 // MOBILE_TAB_BAR_OFFSET removed — tab bar always hidden in chat
 import { useTapDebug } from '@/hooks/use-tap-debug'
 import { useChatMode } from '@/hooks/use-chat-mode'
 import {  useChatActivityStore } from '@/stores/chat-activity-store'
-
-export let _localModelOverride = ''
-export function setLocalModelOverride(model: string) { _localModelOverride = model }
 
 type ChatScreenProps = {
   activeFriendlyId: string
@@ -1083,7 +1082,21 @@ export function ChatScreen({
   }, [modelsQuery.data])
 
   const gatewayModel = currentModelQuery.data || ''
-  const currentModel = _localModelOverride || gatewayModel
+  // Same key the composer stores picks under (it gets `undefined` on a new chat).
+  const composerSessionKey = isNewChat
+    ? undefined
+    : forcedSessionKey ||
+      resolvedSessionKey ||
+      activeCanonicalKey ||
+      activeSessionKey
+  const pickedModel = useSessionModelStore((s) =>
+    s.getModel(sessionModelKey(composerSessionKey)),
+  )
+  // What goes out with each message: the picker choice for this chat, or
+  // nothing so Hermes uses its configured default. Never the session-status
+  // model — that is only what the session last ran on (and can be months stale).
+  const sendModel = _localModelOverride || pickedModel || ''
+  const currentModel = sendModel || gatewayModel
 
   // Ref so sendMessage can always read latest thinkingLevel without being in deps
   const thinkingLevelRef = useRef<ThinkingLevel>(thinkingLevel)
@@ -1165,6 +1178,9 @@ export function ChatScreen({
       }) => {
         const activeSend = activeSendRef.current
         if (activeSend) {
+          useSessionModelStore
+            .getState()
+            .adoptModel(activeSend.sessionKey, sessionKey, friendlyId)
           activeSendRef.current = {
             ...activeSend,
             sessionKey,
@@ -2070,7 +2086,7 @@ export function ChatScreen({
         thinking:
           currentThinkingLevel === 'off' ? undefined : currentThinkingLevel,
         fastMode,
-        model: currentModel || undefined,
+        model: sendModel || undefined,
         idempotencyKey: optimisticClientId || crypto.randomUUID(),
       }).catch((err: unknown) => {
         const messageText = err instanceof Error ? err.message : String(err)
@@ -2087,7 +2103,7 @@ export function ChatScreen({
       startStreaming,
       streamFinish,
       streamStart,
-      currentModel,
+      sendModel,
     ],
   )
 
@@ -2489,6 +2505,7 @@ export function ChatScreen({
         )
         appendHistoryMessage(queryClient, threadId, threadId, optimisticMessage)
         upsertSessionInCache(threadId, optimisticMessage)
+        useSessionModelStore.getState().adoptModel(undefined, threadId)
         setPendingGeneration(true)
         setSending(true)
         setWaitingForResponse(true)
@@ -2928,14 +2945,7 @@ export function ChatScreen({
               onAbort={handleAbortStreaming}
               isLoading={sending || waitingForResponse}
               disabled={sending || hideUi}
-              sessionKey={
-                isNewChat
-                  ? undefined
-                  : forcedSessionKey ||
-                    resolvedSessionKey ||
-                    activeCanonicalKey ||
-                    activeSessionKey
-              }
+              sessionKey={composerSessionKey}
               wrapperRef={composerRef}
               composerRef={composerHandleRef}
               embedded={embedded}
