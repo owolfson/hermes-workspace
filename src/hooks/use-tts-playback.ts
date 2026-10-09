@@ -1,4 +1,9 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
+import {
+  initialBufferWait,
+  speechWeight,
+  type ChunkProgress,
+} from '../lib/tts-schedule'
 
 // Singleton playback controller: only one message speaks at a time, and any
 // component can read/drive the shared state. Audio is decoded from the WAV the
@@ -84,6 +89,23 @@ async function fetchChunkBlob(
   }
 }
 
+// Never buffer longer than this before the first chunk: if the server is too slow
+// to keep up at all, some pauses beat a long silence before anything plays.
+const MAX_INITIAL_BUFFER_MS = 10_000
+
+const nowSec = () => performance.now() / 1000
+
+/** Audio length of a PCM WAV blob from its header (byte rate at offset 28). */
+async function wavSeconds(blob: Blob): Promise<number | undefined> {
+  try {
+    const head = new DataView(await blob.slice(0, 44).arrayBuffer())
+    const byteRate = head.getUint32(28, true)
+    return byteRate > 0 ? (blob.size - 44) / byteRate : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function playBlob(blob: Blob, myReq: number): Promise<void> {
   return new Promise((resolve) => {
     if (myReq !== reqCounter) {
@@ -110,10 +132,10 @@ function playBlob(blob: Blob, myReq: number): Promise<void> {
 }
 
 /**
- * Synthesize and play `text` progressively: the server returns a chunk plan
- * (short first chunk), then every chunk is synthesised back-to-back while the
- * earlier ones play — the GPU never idles waiting on playback, which is what
- * kept gaps out between chunks. Re-calling with the same `key` while busy
+ * Synthesize and play `text` progressively: the server returns a chunk plan,
+ * then every chunk is synthesised back-to-back while the earlier ones play — the
+ * GPU never idles waiting on playback — and playback starts once enough is
+ * buffered that later chunks arrive before they are needed (no mid-reply pauses). Re-calling with the same `key` while busy
  * toggles playback off (stop button).
  */
 export async function speakText(
@@ -164,19 +186,41 @@ export async function speakText(
 
     // Producer: synthesise chunks one after another (the GPU serialises them
     // anyway) without waiting for playback. Consumer: play them in order.
+    const progress: ChunkProgress[] = chunks.map((c) => ({
+      chars: speechWeight(c),
+    }))
     const blobs: Array<Promise<Blob | null>> = []
     let previous: Promise<unknown> = Promise.resolve()
-    for (const chunk of chunks) {
-      const next = previous.then(() =>
-        fetchChunkBlob(chunk, voice, myReq, controller.signal),
-      )
+    chunks.forEach((chunk, i) => {
+      const next = previous.then(async () => {
+        progress[i].startedAt = nowSec()
+        const blob = await fetchChunkBlob(chunk, voice, myReq, controller.signal)
+        progress[i].readyAt = nowSec()
+        if (blob) progress[i].audioSec = await wavSeconds(blob)
+        return blob
+      })
       blobs.push(next)
       previous = next
-    }
+    })
+    let started = false
     for (let i = 0; i < blobs.length; i++) {
       const blob = await blobs[i]
       if (myReq !== reqCounter) return
       if (!blob) continue
+      if (!started) {
+        // Synthesis runs at ~real time, so a short opening chunk followed by a
+        // longer one would leave a pause after it. Buffer just long enough
+        // (re-estimated as chunks land) that later chunks arrive in time.
+        started = true
+        const pending = progress.slice(i)
+        const deadline = performance.now() + MAX_INITIAL_BUFFER_MS
+        while (performance.now() < deadline) {
+          const wait = initialBufferWait(pending, nowSec())
+          if (wait <= 0) break
+          await new Promise((r) => setTimeout(r, Math.min(wait * 1000, 250)))
+          if (myReq !== reqCounter) return
+        }
+      }
       if (snapshot.key !== key || snapshot.state !== 'playing') {
         emit({ key, state: 'playing' })
       }
